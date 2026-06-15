@@ -28,6 +28,11 @@ grep -rnE 'secrets\.|vars\.' .github/workflows 2>/dev/null
 - **Variable** (non-secret) → committed dotenv files (URLs, project IDs, site IDs, bundle IDs,
   publishable keys). When unsure, treat as a secret.
 
+Both kinds are listed in a scope by key name; the engine tags each by where it resolves
+(vault = **secret**, `variables` file = **variable**) and routes it per target (e.g. gha →
+`gh secret set` vs `gh variable set`). Variables are *only ever committed files* — never imported
+into the vault.
+
 ## 4. Normalize key names (environment-neutral)
 The stage is the vault record, so drop stage infixes: `PADDLE_SANDBOX_ADMIN_TOKEN` /
 `PADDLE_PROD_ADMIN_TOKEN` → one `PADDLE_ADMIN_TOKEN` (different value per stage). If the same key
@@ -37,19 +42,23 @@ remap in the scope.
 ## 5. Create `environments/`
 ```
 environments/
-  manifest.yaml          # service: <ns>\n repo: <github-repo-name>
-  variables              # non-secret, stage-agnostic   (optional)
-  variables.production   # per-stage non-secret overrides (optional)
+  manifest.yaml          # YAML — service: <ns> + repo: <name>  (metadata only)
+  variables              # dotenv — non-secret, stage-agnostic            (optional)
+  variables.production   # dotenv — per-stage overrides (win over `variables`)  (optional)
   variables.sandbox
-  <scope> …              # one per target
+  <scope> …              # one text file per target
 ```
-Scope file (see SKILL.md for full syntax) — list every key the target needs; use `DEST = SRC`
-to rename and `SRC@stage` to pin a stage:
+Write variable values straight into the dotenv files (no import step), e.g.
+`echo 'SUPABASE_PROJECT_ID=xigjlrfwrjydakizbnfe' > environments/variables.sandbox`.
+
+Scope file (full syntax in SKILL.md) — list every key the target needs, secrets and variables
+alike; `DEST = SRC` renames, `SRC@stage` pins a stage:
 ```
-# target: cloudflare
-# wrangler-dir: .
-STRIPE_SECRET_KEY
-OPENROUTER_API_KEY = WORKERS_OPENROUTER_API_KEY
+# target: gha               # cloudflare → '# wrangler-dir:' · gha → '# github: ORG/REPO' · local → '# file: <path>'
+# github: ORG/REPO
+SUPABASE_ACCESS_TOKEN                              # secret  (from a vault)
+PROD_DB_PASSWORD = DB_PASSWORD@production          # secret  (cross-stage)
+PROD_PROJECT_ID  = SUPABASE_PROJECT_ID@production  # variable (from variables.production)
 ```
 Pick `repo:` to match how you'll address it: `secrets.sh … <repo>/<scope>`.
 
@@ -58,11 +67,13 @@ Per stage, assemble a temporary dotenv file of the **secret** values (env-neutra
 ```bash
 scripts/vault-import.sh sandbox    --service <ns> /path/to/sandbox-secrets.env
 scripts/vault-import.sh production  --service <ns> /path/to/prod-secrets.env   # often blanks to fill later
+scripts/vault-import.sh common     --service <ns> /path/to/shared-secrets.env  # values identical across stages
 ```
 `vault-import` is conflict-aware (won't clobber a differing existing value without `--force`) and
-never prints values. Put env-agnostic secrets (same in all stages) into `common`. Use
+never prints values. Put env-agnostic secrets (same in all stages) into `common` — a scope reads
+`<stage>` then falls back to `common`, so list the key once and it resolves everywhere. Use
 `vault-edit.sh <stage> --service <ns>` to fill blanks or rotate by hand. **Delete the temp files
-afterward** (`rm -P`); they hold plaintext.
+afterward** (`rm -f`, or `rm -P` to overwrite first); they hold plaintext.
 
 ## 7. Verify
 ```bash
@@ -70,6 +81,9 @@ scripts/vault-list.sh --service <ns>
 scripts/secrets.sh check <repo>/<scope> --stage sandbox     # every key ok or BLANK, tagged secret|variable
 scripts/secrets.sh apply <repo>/<scope> --stage sandbox --dry-run
 ```
+`<repo>` is resolved by scanning `SECRETS_VAULT_REPOS_ROOT` (default `~/Projects`) for a
+`manifest.yaml` with that `repo:`; the index is cached and rebuilt on a miss, so a brand-new
+project is picked up automatically (first lookup is slower).
 
 ## 8. Hygiene
 - Add real secret files (`.env`, `.dev.vars`) to `.gitignore`. If any were committed, untrack
