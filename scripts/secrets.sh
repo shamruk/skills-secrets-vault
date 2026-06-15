@@ -9,7 +9,7 @@
 #   check    report each key as ok / blank, tagged secret|variable (default; no side effects)
 #   print    KEY=VALUE to stdout            (add --mask to redact)
 #   export   export KEY=VALUE (for: eval "$(secrets.sh export …)")
-#   apply    push to the scope's target (cloudflare | gha | appwrite | local)
+#   apply    push to the scope's target (cloudflare | gha | appwrite | codemagic | local)
 #
 # options:
 #   --stage <production|sandbox>   stage to read (vault + variables.<stage>); falls back to common
@@ -19,7 +19,9 @@
 #
 # Keys resolve as SECRET (found in a vault) or VARIABLE (found in environments/variables[.stage]).
 # apply routes by source: gha -> `gh secret set` vs `gh variable set`; local -> dotenv lines;
-# appwrite -> function variables (printed; manual); cloudflare -> secrets only.
+# appwrite -> function variables (printed; manual); cloudflare -> secrets only;
+# codemagic -> REST API env-var group (secret=secure, variable=plain; auth via
+#              $CODEMAGIC_API_TOKEN or vault/common CODEMAGIC_API_TOKEN).
 
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/kc-lib.sh"
@@ -45,7 +47,7 @@ scope_file="$DIR/environments/$SCOPE"
 [[ -f "$scope_file" ]] || { echo "no scope file: $scope_file" >&2; exit 1; }
 
 # ---- parse scope directives + key lines ----
-TARGET=""; WRANGLER_DIR="."; GHA_REPO=""; FILE_REL=""
+TARGET=""; WRANGLER_DIR="."; GHA_REPO=""; FILE_REL=""; CM_APP_ID=""; CM_APP_NAME=""; CM_GROUP=""
 KEYS=()   # entries: "dest<TAB>src<TAB>stage"
 trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
 while IFS= read -r raw || [[ -n "$raw" ]]; do
@@ -58,6 +60,9 @@ while IFS= read -r raw || [[ -n "$raw" ]]; do
       github:*)       GHA_REPO="$(trim "${d#github:}")" ;;
       repo:*)         GHA_REPO="$(trim "${d#repo:}")" ;;   # legacy alias
       file:*)         FILE_REL="$(trim "${d#file:}")" ;;
+      app-id:*)       CM_APP_ID="$(trim "${d#app-id:}")" ;;
+      app-name:*)     CM_APP_NAME="$(trim "${d#app-name:}")" ;;
+      group:*)        CM_GROUP="$(trim "${d#group:}")" ;;
     esac
     continue
   fi
@@ -169,6 +174,40 @@ apply)
     for e in "${KEYS[@]}"; do IFS=$'\t' read -r dest src st <<<"$e"
       v="$(resolve "$src" "$st")"; [[ -z "$v" ]] && { echo "# $dest BLANK" >&2; continue; }
       printf '%s=%s\n' "$dest" "$(mask "$v")"
+    done
+    ;;
+  codemagic)
+    # Push each key into a Codemagic app's environment variable group via the REST API.
+    # secret -> secure=true, variable -> secure=false. Upsert: delete any same-key var in the
+    # group, then create. Auth token from $CODEMAGIC_API_TOKEN or vault/common CODEMAGIC_API_TOKEN.
+    [[ -n "$CM_GROUP" ]] || { echo "scope missing '# group:' directive" >&2; exit 1; }
+    CM_TOKEN="${CODEMAGIC_API_TOKEN:-}"
+    [[ -z "$CM_TOKEN" ]] && CM_TOKEN="$(de_get "$COMMON" CODEMAGIC_API_TOKEN)"
+    [[ -n "$CM_TOKEN" ]] || { echo "codemagic: no API token (set \$CODEMAGIC_API_TOKEN or add CODEMAGIC_API_TOKEN to vault/common)" >&2; exit 1; }
+    api="https://api.codemagic.io"
+    app_id="$CM_APP_ID"
+    if [[ -z "$app_id" ]]; then
+      [[ -n "$CM_APP_NAME" ]] || { echo "scope missing '# app-id:' or '# app-name:' directive" >&2; exit 1; }
+      app_id="$(curl -fsS -H "x-auth-token: $CM_TOKEN" "$api/apps" \
+        | jq -r --arg n "$CM_APP_NAME" '.applications[]? | select(.appName==$n) | (._id // .id)' | head -n1)"
+      [[ -n "$app_id" ]] || { echo "codemagic: no app named '$CM_APP_NAME'" >&2; exit 1; }
+    fi
+    echo "codemagic: app=$app_id group=$CM_GROUP"
+    confirm "Push ${#KEYS[@]} var(s) to Codemagic group '$CM_GROUP'?" || { echo aborted; exit 1; }
+    # existing vars in this group: "key<TAB>id" per line (for idempotent upsert)
+    existing="$(curl -fsS -H "x-auth-token: $CM_TOKEN" "$api/apps/$app_id/variables" \
+      | jq -r --arg g "$CM_GROUP" '.[] | select(.group==$g) | [.key, .id] | @tsv')"
+    for e in "${KEYS[@]}"; do IFS=$'\t' read -r dest src st <<<"$e"
+      v="$(resolve "$src" "$st")"; [[ -z "$v" ]] && { echo "  skip $dest (blank)"; continue; }
+      if [[ "$(source_of "$src" "$st")" == secret ]]; then secure=true; else secure=false; fi
+      old_id="$(awk -v k="$dest" -F'\t' '$1==k{print $2; exit}' <<<"$existing")"
+      if [[ "$DRY" == 1 ]]; then
+        echo "  would: set $dest (secure=$secure)${old_id:+ — replacing $old_id}"; continue
+      fi
+      [[ -n "$old_id" ]] && curl -fsS -X DELETE -H "x-auth-token: $CM_TOKEN" "$api/apps/$app_id/variables/$old_id" >/dev/null
+      body="$(jq -nc --arg k "$dest" --arg v "$v" --arg g "$CM_GROUP" --argjson s "$secure" '{key:$k,value:$v,group:$g,secure:$s}')"
+      printf '%s' "$body" | curl -fsS -X POST -H "x-auth-token: $CM_TOKEN" -H "Content-Type: application/json" \
+        --data-binary @- "$api/apps/$app_id/variables" >/dev/null && echo "  set $dest (secure=$secure)"
     done
     ;;
   *) echo "unknown target: $TARGET" >&2; exit 1 ;;

@@ -33,10 +33,12 @@ A key resolves as a **secret** (found in a vault) or a **variable** (found in a 
 ## Scope file format (`environments/<scope>`)
 
 ```
-# target: cloudflare        # cloudflare | gha | appwrite | local
+# target: cloudflare        # cloudflare | gha | appwrite | codemagic | local
 # wrangler-dir: .           # (cloudflare) dir with wrangler.toml, relative to repo
 # github: ORG/REPO          # (gha) GitHub repo
 # file: .dev.vars           # (local) dotenv file to render, relative to repo
+# app-name: my-app          # (codemagic) target app — or `# app-id: <id>` (explicit)
+# group: production         # (codemagic) environment variable group name
 
 STRIPE_SECRET_KEY                       # resolve by this name
 OPENROUTER_API_KEY = WORKERS_OPENROUTER_API_KEY   # rename: dest = vault/var key
@@ -65,7 +67,9 @@ scripts/vault-import.sh <stage> [--service <ns>] [--force] [FILE]   # merge a do
 `apply` routing: **cloudflare** → `wrangler secret put … --env <stage>` (secrets only; vars stay
 in wrangler.toml); **gha** → `gh secret set` for secrets, `gh variable set` for variables;
 **local** → merge secrets+variables into the dotenv file (other lines untouched); **appwrite** →
-prints masked values to set as function variables (auto-push not wired).
+prints masked values to set as function variables (auto-push not wired); **codemagic** → REST API
+upsert into the app's env-var group (secret → `secure:true`, variable → `secure:false`); auth via
+`$CODEMAGIC_API_TOKEN` or vault/`common` `CODEMAGIC_API_TOKEN`.
 
 ## Conventions & safety
 
