@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Convert a YAML file (arg) or stdin to JSON. Prefers Ruby (ships YAML/psych on macOS),
+# falls back to yq or python3+pyyaml. Used only for the small environments/manifest.yaml.
+set -euo pipefail
+if command -v ruby >/dev/null 2>&1; then
+  exec ruby -ryaml -rjson -e 'print JSON.generate(YAML.load(ARGF.read) || {})' "$@"
+elif command -v yq >/dev/null 2>&1; then
+  exec yq -o=json '.' "$@"
+elif command -v python3 >/dev/null 2>&1; then
+  exec python3 -c 'import sys,yaml,json; json.dump(yaml.safe_load(open(sys.argv[1]).read() if len(sys.argv)>1 else sys.stdin.read()) or {}, sys.stdout)' "$@"
+else
+  echo "yaml2json: need ruby, yq, or python3+pyyaml" >&2; exit 1
+fi
