@@ -7,7 +7,7 @@ description: >-
   secrets to Cloudflare Workers, GitHub Actions, Appwrite, or a local .env/.dev.vars; or onboard
   a new project ("set up secrets/environments for this repo"). Triggers: secrets, env vars,
   vault, Keychain, .env/.dev.vars, "rotate the key", "set the Cloudflare/GitHub secret",
-  production vs sandbox credentials.
+  production vs sandbox credentials; monorepo/submodule projects ("which repo owns this scope?").
 ---
 
 # secrets-vault
@@ -71,8 +71,35 @@ prints masked values to set as function variables (auto-push not wired); **codem
 upsert into the app's env-var group (secret → `secure:true`, variable → `secure:false`); auth via
 `$CODEMAGIC_API_TOKEN` or vault/`common` `CODEMAGIC_API_TOKEN`.
 
+## Multi-repo, submodules & monorepos (read before creating a scope)
+
+A **scope belongs to the repo that owns its deploy target** — the repo holding that target's config
+(`wrangler.toml`, the GitHub repo, the Appwrite/Codemagic app). Put the scope in **that repo's**
+`environments/`, even when the repo is pulled into another project as a **git submodule**.
+
+- The **umbrella/parent** repo's `environments/` covers only targets the umbrella itself deploys
+  (its own `local` files, or Appwrite functions whose code lives in it). Never copy a submodule's
+  `cloudflare`/`gha`/… scope into the parent — that's a duplicate in the wrong place. (A worker that
+  is a submodule deploys from its **own** repo, not from the umbrella.)
+- **Every repo must commit its own `environments/manifest.yaml`**, on every branch a submodule or
+  deploy tracks. Without it the repo isn't self-identifying: commands run from *inside* it walk
+  **up** and resolve to the parent project's manifest (wrong `repo:`/`service`). `environments/`
+  (manifest + scopes + variables) is branch-agnostic tooling config — keep it identical across
+  branches; don't let it land on `dev` but not `main` (a classic bug when a submodule tracks `main`).
+- Resolution is by the `repo:` in a manifest (scanned under `$SECRETS_VAULT_REPOS_ROOT`), so
+  `<repo>/<scope>` works from anywhere — you need **not** be inside the parent. A repo checked out
+  twice (its own clone **and** a parent's `submodule/` path) yields two manifests with the same
+  `repo:`; the resolver picks one — fine, since they're the same repo with the same scopes.
+- All repos in one ecosystem share **one** `service` (one vault); each manifest just sets `service:`.
+  Secrets are shared; each scope selects the subset its target needs.
+
+**Before creating a scope:** find the repo that owns the target and check `<repo>/environments/` —
+it may already have it. If the target lives in a submodule, edit the submodule's repo, not the parent.
+
 ## Conventions & safety
 
+- A scope lives in the repo that **owns its deploy target**, never in an umbrella repo that merely
+  submodules it; commit each repo's `environments/manifest.yaml` so it self-identifies from any checkout.
 - `print`/`vault-show` without `--mask` emit secrets — never redirect into a repo.
 - `environments/` files (manifest, variables, scopes) contain **no secrets** and are committed.
 - `security -w` hex-dumps multi-line values on read; the lib decodes transparently.

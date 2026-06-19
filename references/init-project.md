@@ -89,3 +89,7 @@ project is picked up automatically (first lookup is slower).
 - Add real secret files (`.env`, `.dev.vars`) to `.gitignore`. If any were committed, untrack
   (`git rm --cached`), gitignore, and **rotate** the exposed values, then update the vault.
 - `environments/` (manifest, variables, scopes) is non-secret and should be committed.
+- If this repo is used as a **git submodule** elsewhere, its `environments/` (especially
+  `manifest.yaml`) belongs in **this** repo — not the parent — and must be committed on every branch
+  the submodule/deploy tracks (e.g. both `main` and `dev`), or a checkout from inside the submodule
+  resolves to the parent project's manifest. See SKILL.md "Multi-repo, submodules & monorepos".
