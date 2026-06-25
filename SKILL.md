@@ -60,8 +60,8 @@ scripts/secrets.sh apply  <repo>/<scope> --stage <stage> [--dry-run] [--yes]
 
 scripts/vault-list.sh [--service <ns>]                        # stages + key counts (no values)
 scripts/vault-show.sh <stage> [--service <ns>] [--mask] [KEY …]
-scripts/vault-edit.sh <stage> [--service <ns>]                # $EDITOR a stage; add/rotate/fill blanks
-scripts/vault-import.sh <stage> [--service <ns>] [--force] [FILE]   # merge a dotenv file into a stage
+scripts/vault-edit.sh <stage> [--service <ns>] [--yes]        # $EDITOR a stage; add/rotate/fill blanks
+scripts/vault-import.sh <stage> [--service <ns>] [--force] [--yes] [FILE]  # merge a dotenv file into a stage
 ```
 
 `apply` routing: **cloudflare** → `wrangler secret put … --env <stage>` (secrets only; vars stay
@@ -100,6 +100,11 @@ it may already have it. If the target lives in a submodule, edit the submodule's
 
 - A scope lives in the repo that **owns its deploy target**, never in an umbrella repo that merely
   submodules it; commit each repo's `environments/manifest.yaml` so it self-identifies from any checkout.
+- **Destructive writes are guarded.** Replacing/blanking an existing **non-blank** secret
+  (`vault-import --force`, or a `vault-edit` that deletes/blanks/changes a value) prints a loud
+  warning (key, masked old → new) and requires typing `overwrite` at the TTY; `--yes` bypasses it
+  (automation — explicit opt-in). With no TTY and no `--yes`, it **aborts** rather than clobber.
+  Adding keys / filling blanks is non-destructive and needs no confirmation.
 - `print`/`vault-show` without `--mask` emit secrets — never redirect into a repo.
 - `environments/` files (manifest, variables, scopes) contain **no secrets** and are committed.
 - `security -w` hex-dumps multi-line values on read; the lib decodes transparently.
