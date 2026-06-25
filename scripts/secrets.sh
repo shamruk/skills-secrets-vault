@@ -47,16 +47,18 @@ scope_file="$DIR/environments/$SCOPE"
 [[ -f "$scope_file" ]] || { echo "no scope file: $scope_file" >&2; exit 1; }
 
 # ---- parse scope directives + key lines ----
-TARGET=""; WRANGLER_DIR="."; GHA_REPO=""; FILE_REL=""; CM_APP_ID=""; CM_APP_NAME=""; CM_GROUP=""
+TARGET=""; WRANGLER_DIR="."; WRANGLER_ENV=""; GHA_REPO=""; FILE_REL=""; CM_APP_ID=""; CM_APP_NAME=""; CM_GROUP=""
 KEYS=()   # entries: "dest<TAB>src<TAB>stage"
 trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; s="${s%"${s##*[![:space:]]}"}"; printf '%s' "$s"; }
 while IFS= read -r raw || [[ -n "$raw" ]]; do
   line="$(trim "$raw")"; [[ -z "$line" ]] && continue
   if [[ "$line" == \#* ]]; then
     d="$(trim "${line#\#}")"
+    d="$(trim "${d%%#*}")"   # strip an inline comment after the directive value (e.g. `# target: x  # note`)
     case "$d" in
       target:*)       TARGET="$(trim "${d#target:}")" ;;
       wrangler-dir:*) WRANGLER_DIR="$(trim "${d#wrangler-dir:}")" ;;
+      wrangler-env:*) WRANGLER_ENV="$(trim "${d#wrangler-env:}")" ;;
       github:*)       GHA_REPO="$(trim "${d#github:}")" ;;
       repo:*)         GHA_REPO="$(trim "${d#repo:}")" ;;   # legacy alias
       file:*)         FILE_REL="$(trim "${d#file:}")" ;;
@@ -127,15 +129,27 @@ print|export)
 apply)
   case "$TARGET" in
   cloudflare)
-    wdir="$DIR/$WRANGLER_DIR"; [[ -f "$wdir/wrangler.toml" ]] || { echo "no wrangler.toml in $wdir" >&2; exit 1; }
+    wdir="$DIR/$WRANGLER_DIR"
+    [[ -f "$wdir/wrangler.toml" || -f "$wdir/wrangler.jsonc" || -f "$wdir/wrangler.json" ]] \
+      || { echo "no wrangler config (.toml/.jsonc/.json) in $wdir" >&2; exit 1; }
     [[ -n "$STAGE" ]] || { echo "--stage required" >&2; exit 2; }
-    echo "cloudflare: $REPO  env=$STAGE  dir=$wdir"
-    confirm "Apply secrets to Cloudflare ($STAGE)?" || { echo aborted; exit 1; }
+    # --env selects a wrangler *named environment* (a separate Worker), not the vault stage.
+    # Default: --env <stage> (per-stage named envs, e.g. separate prod/sandbox Workers).
+    # `# wrangler-env: none` omits --env for a single top-level Worker; `# wrangler-env: <name>`
+    # pins an explicit env name. (empty-array exprs below are guarded for bash 3.2 / set -u.)
+    case "${WRANGLER_ENV:-}" in
+      none) envflag=();                      envlabel="(top-level)" ;;
+      "")   envflag=(--env "$STAGE");         envlabel="$STAGE" ;;
+      *)    envflag=(--env "$WRANGLER_ENV");  envlabel="$WRANGLER_ENV" ;;
+    esac
+    flagshow="${envflag[*]+${envflag[*]}}"
+    echo "cloudflare: $REPO  env=$envlabel  dir=$wdir"
+    confirm "Apply secrets to Cloudflare ($envlabel)?" || { echo aborted; exit 1; }
     for e in "${KEYS[@]}"; do IFS=$'\t' read -r dest src st <<<"$e"
-      [[ "$(source_of "$src" "$st")" == secret ]] || { echo "  skip $dest (variable — set in wrangler.toml [vars])"; continue; }
+      [[ "$(source_of "$src" "$st")" == secret ]] || { echo "  skip $dest (variable — set in wrangler config [vars])"; continue; }
       v="$(resolve "$src" "$st")"; [[ -z "$v" ]] && { echo "  skip $dest (blank)"; continue; }
-      if [[ "$DRY" == 1 ]]; then echo "  would: wrangler secret put $dest --env $STAGE"
-      else ( cd "$wdir" && printf '%s' "$v" | npx wrangler secret put "$dest" --env "$STAGE" >/dev/null ) && echo "  set $dest"; fi
+      if [[ "$DRY" == 1 ]]; then echo "  would: wrangler secret put $dest${flagshow:+ $flagshow}"
+      else ( cd "$wdir" && printf '%s' "$v" | npx wrangler secret put "$dest" "${envflag[@]+"${envflag[@]}"}" >/dev/null ) && echo "  set $dest"; fi
     done
     ;;
   gha)

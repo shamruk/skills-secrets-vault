@@ -34,7 +34,9 @@ A key resolves as a **secret** (found in a vault) or a **variable** (found in a 
 
 ```
 # target: cloudflare        # cloudflare | gha | appwrite | codemagic | local
-# wrangler-dir: .           # (cloudflare) dir with wrangler.toml, relative to repo
+# wrangler-dir: .           # (cloudflare) dir with wrangler.toml/.jsonc/.json, relative to repo
+# wrangler-env: none        # (cloudflare) wrangler named env: omit = --env <stage>;
+#                           #   `none` = single top-level Worker (no --env); `<name>` = that env
 # github: ORG/REPO          # (gha) GitHub repo
 # file: .dev.vars           # (local) dotenv file to render, relative to repo
 # app-name: my-app          # (codemagic) target app — or `# app-id: <id>` (explicit)
@@ -64,8 +66,11 @@ scripts/vault-edit.sh <stage> [--service <ns>] [--yes]        # $EDITOR a stage;
 scripts/vault-import.sh <stage> [--service <ns>] [--force] [--yes] [FILE]  # merge a dotenv file into a stage
 ```
 
-`apply` routing: **cloudflare** → `wrangler secret put … --env <stage>` (secrets only; vars stay
-in wrangler.toml); **gha** → `gh secret set` for secrets, `gh variable set` for variables;
+`apply` routing: **cloudflare** → `wrangler secret put …` (secrets only; vars stay in the wrangler
+config). By default targets `--env <stage>` (per-stage named envs); a scope can set `# wrangler-env:
+none` for a single top-level Worker (no `--env`) or `# wrangler-env: <name>` to pin a named env.
+Config may be `wrangler.toml`, `wrangler.jsonc`, or `wrangler.json`. **gha** → `gh secret set` for
+secrets, `gh variable set` for variables;
 **local** → merge secrets+variables into the dotenv file (other lines untouched); **appwrite** →
 prints masked values to set as function variables (auto-push not wired); **codemagic** → REST API
 upsert into the app's env-var group (secret → `secure:true`, variable → `secure:false`); auth via
