@@ -8,7 +8,7 @@ Prerequisite (once per machine): `brew install age` and `scripts/vault-init.sh` 
 
 ## 1. Decide the ecosystem `service`
 Secrets are grouped by a **service** namespace — a directory in the vault — shared by related
-projects (e.g. `lunai.care`). Check `scripts/vault-list.sh --all` for existing services and reuse
+projects (e.g. `acme.dev`). Check `scripts/vault-list.sh --all` for existing services and reuse
 the ecosystem's one if this repo belongs to it; otherwise pick a new stable name. The three
 stages are always `production`, `sandbox`, `common`.
 
@@ -53,7 +53,7 @@ environments/
   <scope> …              # one text file per target
 ```
 Write variable values straight into the dotenv files (no import step), e.g.
-`echo 'SUPABASE_PROJECT_ID=xigjlrfwrjydakizbnfe' > environments/variables.sandbox`.
+`echo 'SUPABASE_PROJECT_ID=abcdefghijklmnopqrst' > environments/variables.sandbox`.
 
 Scope file (full syntax in SKILL.md) — list every key the target needs, secrets and variables
 alike; `DEST = SRC` renames, `SRC@stage` pins a stage:

@@ -4,7 +4,7 @@
 # Usage:
 #   vault-show.sh <stage> [--service <namespace>] [--mask] [KEY ...]
 #   vault-show.sh sandbox --mask
-#   vault-show.sh production --service lunai.care STRIPE_SECRET_KEY
+#   vault-show.sh production --service acme.dev STRIPE_SECRET_KEY
 
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/kc-lib.sh"

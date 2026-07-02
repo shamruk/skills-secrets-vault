@@ -23,7 +23,7 @@ declare which keys each deploy target needs; the engine resolves a scope and
 - **vault** — a directory of age-encrypted files, default
   `~/Library/Mobile Documents/com~apple~CloudDocs/secrets-vault` (override:
   `$SECRETS_VAULT_DIR`; any dir works, iCloud Drive gives off-machine durability).
-- **service** — a directory in the vault per ecosystem (e.g. `lunai.care`). Holds 3 **stages**
+- **service** — a directory in the vault per ecosystem (e.g. `acme.dev`). Holds 3 **stages**
   (`production.age`, `sandbox.age`, `common.age`), each an encrypted dotenv blob of secret
   values. `common` = identical across stages. Stage is chosen by *which file* you read, so key
   names are environment-neutral.

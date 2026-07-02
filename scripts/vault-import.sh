@@ -13,7 +13,7 @@
 #
 # Usage:
 #   vault-import.sh <stage> [--service <ns>] [--force] [--yes] [--dry-run] [--new-service] [FILE]
-#   cat secrets.env | vault-import.sh sandbox --service lunai.care
+#   cat secrets.env | vault-import.sh sandbox --service acme.dev
 
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/kc-lib.sh"
