@@ -23,6 +23,11 @@ while [[ $# -gt 0 ]]; do case "$1" in
   *) echo "usage: $0 [--pull | --agent]" >&2; exit 2 ;;
 esac; done
 
+# Helper mode: the signed helper owns the mirror (its own iCloud container, no TCC).
+if hb="$(_helper_bin)"; then
+  if [[ "$PULL" == 1 ]]; then exec "$hb" pull; else exec "$hb" sync; fi
+fi
+
 _cloud_enabled || { [[ "$AGENT" == 1 ]] || echo "no mirror configured (SECRETS_VAULT_CLOUD_DIR=none)"; exit 0; }
 
 if [[ "$AGENT" == 1 ]]; then

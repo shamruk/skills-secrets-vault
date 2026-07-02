@@ -83,9 +83,12 @@ _kc_identity_put() {
 # identity_load -> the AGE-SECRET-KEY-1… line on stdout.
 # Order: $SECRETS_VAULT_IDENTITY_FILE (tests/CI) | Keychain cache | identity.age (passphrase
 # prompt, then re-cache) | error. Memoized per process.
-# _identity_age_path -> path of the passphrase-encrypted recovery copy (primary, else cloud)
+# _identity_age_path -> path of the passphrase-encrypted recovery copy (primary, else mirror)
 _identity_age_path() {
   if [[ -f "$VAULT_DIR/identity.age" ]]; then printf '%s' "$VAULT_DIR/identity.age"; return 0; fi
+  if _cloud_pull "identity.age" 2>/dev/null && [[ -f "$VAULT_DIR/identity.age" ]]; then
+    printf '%s' "$VAULT_DIR/identity.age"; return 0
+  fi
   if _cloud_enabled && _vault_materialize "$VAULT_CLOUD_DIR/identity.age" 2>/dev/null \
      && [[ -r "$VAULT_CLOUD_DIR/identity.age" ]]; then
     printf '%s' "$VAULT_CLOUD_DIR/identity.age"; return 0
@@ -148,7 +151,17 @@ _vault_materialize() {
   return 1
 }
 
-# ---- cloud mirror (durability copy in iCloud Drive) ---------------------------
+# ---- cloud mirror (durability copy in iCloud) ----------------------------------
+
+# Preferred mode: the Developer-ID-signed helper app mirrors into its own iCloud ubiquity
+# container (no TCC anywhere). When it's installed, shell-side mirroring is skipped entirely —
+# the background agent runs the helper within seconds of any vault write (.last-write trigger).
+# Fallback mode (no helper built): direct copies into $VAULT_CLOUD_DIR (iCloud Drive folder).
+_HELPER_APP="$HOME/Library/Application Support/secrets-vault/SecretsVaultHelper.app"
+_helper_bin() {
+  local b="$_HELPER_APP/Contents/MacOS/secrets-vault-helper"
+  [[ -x "$b" ]] && printf '%s' "$b"
+}
 
 _cloud_enabled() { [[ -n "$VAULT_CLOUD_DIR" && "$VAULT_CLOUD_DIR" != none && "$VAULT_CLOUD_DIR" != "$VAULT_DIR" ]]; }
 
@@ -177,7 +190,9 @@ _mirror_sweep() {
 
 # _mirror_after_write <rel> — mirror one file; on failure mark pending and warn (the next
 # vault write from an app with iCloud access flushes everything pending).
+# Helper mode: no shell-side copies — the agent's helper syncs (triggered by .last-write).
 _mirror_after_write() {
+  if [[ -n "$(_helper_bin)" ]]; then return 0; fi
   _cloud_enabled || return 0
   if _mirror_file "$1"; then
     [[ -f "$VAULT_DIR/.mirror-pending" ]] && _mirror_sweep >/dev/null 2>&1 || true
@@ -188,9 +203,14 @@ _mirror_after_write() {
   return 0
 }
 
-# _cloud_pull <rel> — copy a file from the cloud dir into the primary (new machine / catch-up)
+# _cloud_pull <rel> — copy a file from the mirror into the primary (new machine / catch-up).
+# Helper mode first (pull runs inside the entitled app, no TCC), then the CloudDocs fallback.
 _cloud_pull() {
-  local rel="$1" src="$VAULT_CLOUD_DIR/$1" dst="$VAULT_DIR/$1"
+  local rel="$1" src="$VAULT_CLOUD_DIR/$1" dst="$VAULT_DIR/$1" hb
+  if hb="$(_helper_bin)"; then
+    "$hb" pull >/dev/null 2>&1 || true
+    [[ -f "$dst" ]] && return 0
+  fi
   _cloud_enabled || return 1
   _vault_materialize "$src" 2>/dev/null || return 1
   mkdir -p "$(dirname "$dst")"
@@ -237,6 +257,8 @@ vault_exists() {
 }
 vault_delete_stage() {
   rm -f "$VAULT_DIR/$1/$2.age"
+  date +%s >"$VAULT_DIR/.last-write" 2>/dev/null || true   # wake the agent to mirror the deletion
+  if [[ -n "$(_helper_bin)" ]]; then return 0; fi
   if _cloud_enabled && [[ -f "$VAULT_CLOUD_DIR/$1/$2.age" ]]; then
     rm -f "$VAULT_CLOUD_DIR/$1/$2.age" 2>/dev/null \
       || echo "warning: deleted locally but not from the iCloud mirror ($VAULT_CLOUD_DIR/$1/$2.age) — remove it from a normal terminal" >&2

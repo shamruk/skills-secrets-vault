@@ -24,11 +24,13 @@ standalone from any shell.
 
 ## Why
 
-- **Lose the laptop, keep the secrets.** Every write is mirrored to iCloud Drive as ordinary
-  files, and a tiny background agent (`vault-agent.sh install`) keeps the mirror fresh even
-  when the writing process itself is blocked from iCloud — if backup ever stalls, it tells
-  you with an on-screen dialog, not a log line. Recovery on a new Mac = iCloud sign-in + one
-  passphrase.
+- **Lose the laptop, keep the secrets.** A tiny background agent mirrors every vault write to
+  iCloud. With an Apple Developer account it's the iOS-style clean version: a signed helper
+  scoped to **its own iCloud container** ("Secrets Vault" folder in iCloud Drive) — zero
+  macOS permission prompts, no access to anything else. Without one, an applet fallback
+  mirrors to a plain iCloud Drive folder (one Files & Folders grant). Either way, if backup
+  ever stalls you get an on-screen dialog, not a log line. Recovery on a new Mac = iCloud
+  sign-in + one passphrase.
 - **No prompts in daily work — and no macOS permission walls.** The age identity is cached in
   the login Keychain; scripts decrypt silently. The working copy lives at `~/.secrets-vault`
   (a plain home dir), so sandboxed/headless processes never hit the per-app TCC gate that

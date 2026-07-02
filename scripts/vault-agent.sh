@@ -9,6 +9,12 @@
 # app's name (click Allow once). If syncing still fails, the applet shows an on-screen dialog
 # (at most once per 6h) with an Open Settings button — problems land on the screen, not in logs.
 #
+# Two agent flavors, best available wins at install time:
+#   1. helper mode — SecretsVaultHelper.app (Developer-ID-signed, syncs into its own iCloud
+#      container, zero TCC). Used when the app exists or build-helper.sh can produce it.
+#   2. applet mode — the osacompile applet + iCloud Drive folder (needs one Files & Folders
+#      grant). Fallback for Macs without the signing cert/profile.
+#
 # Usage: vault-agent.sh install | status | uninstall
 
 set -euo pipefail
@@ -30,12 +36,17 @@ if [[ "$CMD" == "uninstall" ]]; then
   agent_bootout
   rm -f "$PLIST"
   rm -rf "$APP"
-  echo "agent uninstalled (log kept at $LOG)"
+  echo "agent uninstalled (log kept at $LOG; SecretsVaultHelper.app kept if present)"
   exit 0
 fi
 
 if [[ "$CMD" == "status" ]]; then
-  if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then echo "agent: loaded ($LABEL)"
+  if launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
+    if [[ -f "$PLIST" ]] && grep -q "SecretsVaultHelper" "$PLIST"; then
+      echo "agent: loaded ($LABEL, helper mode — own iCloud container, no permissions)"
+    else
+      echo "agent: loaded ($LABEL, applet mode — iCloud Drive folder)"
+    fi
   else echo "agent: NOT LOADED — run vault-agent.sh install"; fi
   if [[ -f "$STATE_DIR/last-sync" ]]; then
     last="$(cat "$STATE_DIR/last-sync")"; now="$(date +%s)"
@@ -51,9 +62,57 @@ fi
 
 # ---- install -------------------------------------------------------------------
 
-command -v osacompile >/dev/null || { echo "osacompile not found (macOS required)" >&2; exit 1; }
 [[ -d "$VAULT_DIR" ]] || { echo "no vault at $VAULT_DIR — run vault-init.sh first" >&2; exit 1; }
 mkdir -p "$STATE_DIR" "$(dirname "$PLIST")" "$(dirname "$LOG")"
+
+# Prefer the signed helper (own iCloud container, zero TCC); build it if possible.
+agent_bin=""; agent_args=""
+if hb="$(_helper_bin)"; then
+  agent_bin="$hb"; agent_args="<string>sync</string>"
+elif [[ -f "$STATE_DIR/secrets-vault-sync.provisionprofile" ]] \
+     && security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
+  echo "building signed helper (profile + identity found)..."
+  if "$KC_HERE/build-helper.sh" && hb="$(_helper_bin)"; then
+    agent_bin="$hb"; agent_args="<string>sync</string>"
+  else
+    echo "helper build failed — falling back to the applet" >&2
+  fi
+fi
+
+if [[ -n "$agent_bin" ]]; then
+  agent_bootout
+  cat >"$PLIST" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key><string>$LABEL</string>
+	<key>ProgramArguments</key>
+	<array><string>$agent_bin</string>$agent_args</array>
+	<key>WatchPaths</key>
+	<array><string>$VAULT_DIR</string></array>
+	<key>RunAtLoad</key><true/>
+	<key>StartInterval</key><integer>3600</integer>
+	<key>ThrottleInterval</key><integer>60</integer>
+	<key>StandardOutPath</key><string>$LOG</string>
+	<key>StandardErrorPath</key><string>$LOG</string>
+</dict>
+</plist>
+PLIST
+  launchctl bootstrap "gui/$(id -u)" "$PLIST"
+  launchctl kickstart "gui/$(id -u)/$LABEL" || true
+  echo "agent installed in HELPER mode:"
+  echo "  app     ${agent_bin%/Contents/MacOS/*}"
+  echo "  mirror  its own iCloud container ('Secrets Vault' folder in iCloud Drive)"
+  echo "  watches $VAULT_DIR (any vault write triggers a sync; hourly otherwise)"
+  echo "  log     $LOG"
+  echo "No permission prompts — the helper is scoped to its own container."
+  exit 0
+fi
+
+# ---- fallback: AppleScript applet + iCloud Drive folder --------------------------
+
+command -v osacompile >/dev/null || { echo "osacompile not found (macOS required)" >&2; exit 1; }
 
 # The applet: run the sync; on failure nag with an on-screen dialog at most once per 6h.
 src="$(mktemp "${TMPDIR:-/tmp}/svs.XXXXXX.applescript")"

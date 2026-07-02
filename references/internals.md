@@ -62,10 +62,40 @@ or when modifying the skill itself — using the skill never requires it.
 - "Keep Downloaded" pinning is Finder-only; Apple exposes no CLI/API for it. The files are
   tiny (~hundreds of bytes), so eviction is unlikely regardless.
 
-## Background sync agent (`vault-agent.sh`)
+## Signed helper — container mode (preferred)
 
-Covers the case where *no* vault-writing process ever has iCloud access (all headless/
-sandboxed): without it the mirror would go stale with only log warnings nobody reads.
+`SecretsVaultHelper.app` (built by `scripts/build-helper.sh` from `scripts/helper-src/`,
+SwiftPM) mirrors the vault into **its own iCloud ubiquity container** — the iOS model:
+
+- Bundle `com.shamruk.secrets-vault-sync`, container `iCloud.com.shamruk.secrets-vault-sync`,
+  team `UA5Q77U2KN`. Signed **Developer ID Application** with a **Developer ID provisioning
+  profile** (expires 2044, all devices — no annual rebuild) carrying
+  `icloud-container-identifiers`, `ubiquity-container-identifiers`,
+  `icloud-services=[CloudDocuments]`. Profile lives at
+  `~/Library/Application Support/secrets-vault/secrets-vault-sync.provisionprofile`
+  (gitignored; regenerate on the Apple portal: the App ID's iCloud capability must have the
+  container **assigned via Edit/Configure**, else the profile's container arrays are empty
+  and the container URL resolves nil).
+- Container on disk: `~/Library/Mobile Documents/iCloud~com~shamruk~secrets-vault-sync/
+  Documents/vault/<service>/<stage>.age` (+ `identity.age`, `recipient.txt`, `README.txt`).
+  `NSUbiquitousContainers` in Info.plist (`IsDocumentScopePublic`, name "Secrets Vault")
+  makes it visible in Finder's iCloud Drive; `CFBundleVersion` is bumped every build so
+  changes take effect.
+- **Zero TCC**: the entitlement authorizes the app's own container; no prompts, no Settings
+  entries, no access to anything else. Other processes (shells) still can't read the
+  container — that's the point; they go through the helper (`sync`/`pull`/`path`).
+- Writes use `NSFileCoordinator`; deletions mirror (primary wins); dataless files are
+  materialized with a bounded wait (only when a `.name.icloud` placeholder exists).
+- In helper mode, `kc-lib` does **no inline mirroring** — `vault_put`/`vault_delete_stage`
+  just touch `$VAULT_DIR/.last-write` and the agent syncs within ~1 min (ThrottleInterval).
+  `_cloud_pull`/`vault-sync.sh` delegate to the helper when present.
+
+## Background sync agent (`vault-agent.sh`) — applet fallback
+
+For Macs without the signing cert/profile, `install` falls back to the AppleScript applet +
+iCloud Drive folder mode below. Covers the case where *no* vault-writing process ever has
+iCloud access (all headless/sandboxed): without an agent the mirror would go stale with only
+log warnings nobody reads.
 
 - **Why an .app**: TCC never prompts for non-app processes — a bash LaunchAgent is denied
   *silently*, and granting `/bin/bash` Full Disk Access would be over-broad. `install`
@@ -143,8 +173,10 @@ age -d -i <(age -d "$VAULT_DIR/identity.age") "$VAULT_DIR/<service>/<stage>.age"
 | `scripts/secrets.sh` | scope engine: check/print/export/apply to targets |
 | `scripts/vault-{list,show,edit,import,delete}.sh` | vault CRUD |
 | `scripts/vault-init.sh` | identity setup / `--recover` |
-| `scripts/vault-sync.sh` | reconcile primary ↔ mirror (push, `--pull`, `--agent`) |
-| `scripts/vault-agent.sh` | background mirror agent (install/status/uninstall) |
+| `scripts/vault-sync.sh` | reconcile primary ↔ mirror (push, `--pull`, `--agent`; delegates to helper) |
+| `scripts/vault-agent.sh` | background mirror agent (install/status/uninstall; helper or applet mode) |
+| `scripts/build-helper.sh` | build + Developer-ID-sign SecretsVaultHelper.app |
+| `scripts/helper-src/` | SwiftPM source of the container-scoped helper |
 | `scripts/vault-migrate.sh` | one-time legacy Keychain → vault migration |
 | `scripts/yaml2json` | YAML shim (ruby → yq → python3+PyYAML) for `manifest.yaml` |
 
