@@ -19,7 +19,9 @@ SERVICE=""
 [[ "$ALL" == 1 ]] || SERVICE="$(pick_service "$SVC" || true)"
 
 echo "vault: $VAULT_DIR"
-if _cloud_enabled; then
+if hb="$(_helper_bin)"; then
+  echo "mirror: iCloud container 'Secrets Vault' (signed helper)"
+elif _cloud_enabled; then
   if [[ -f "$VAULT_DIR/.mirror-pending" ]]; then echo "mirror: $VAULT_CLOUD_DIR (PENDING — run vault-sync.sh)"
   else echo "mirror: $VAULT_CLOUD_DIR"; fi
 fi
