@@ -19,6 +19,8 @@ esac; done
 [[ -n "$STAGE" ]] || { echo "usage: $0 <production|sandbox|common> [--service X] [--mask] [KEY ...]" >&2; exit 2; }
 SERVICE="$(pick_service "$SVC")"
 [[ -n "$SERVICE" ]] || { echo "no service: pass --service, set SECRETS_VAULT_SERVICE, or run inside a project" >&2; exit 2; }
+vault_require_age
+vault_check_migration "$SERVICE"
 
 blob="$(vault_get "$SERVICE" "$STAGE")" || { echo "vault not found: $SERVICE/$STAGE" >&2; exit 1; }
 

@@ -2,9 +2,17 @@
 # Shared helpers for the secrets-vault skill (project-agnostic).
 #
 # Storage model:
-#   secrets   -> macOS login Keychain. Per ecosystem a "service" namespace holds 3
-#                generic-password "secure note" records (stages): production | sandbox | common.
-#                value = dotenv blob (KEY=VALUE), env-neutral key names. Stage chosen by record.
+#   secrets   -> age-encrypted files in an iCloud Drive folder ($VAULT_DIR), so the vault
+#                survives losing the machine. Per ecosystem a "service" directory holds 3
+#                encrypted stage files: production.age | sandbox.age | common.age.
+#                plaintext = dotenv blob (KEY=VALUE), env-neutral key names.
+#   keys      -> one X25519 age identity for the whole vault:
+#                  * plaintext identity cached in the macOS login Keychain
+#                    (item: -s secrets-vault -a age-identity) for prompt-free daily use
+#                  * $VAULT_DIR/identity.age = the identity encrypted with a passphrase
+#                    (age -p) — disaster-recovery copy, syncs via iCloud
+#                  * $VAULT_DIR/recipient.txt = the public key; all writes encrypt with
+#                    this, so writing never needs the secret identity
 #   variables -> committed dotenv files in a project's environments/: `variables` (base) +
 #                optional `variables.<stage>` overrides. Plain KEY=VALUE (not YAML).
 #   manifest  -> environments/manifest.yaml (YAML): project metadata `service:` + `repo:`.
@@ -14,17 +22,22 @@
 
 set -euo pipefail
 
-KC_KIND="secrets-vault"
+KC_KIND="secrets-vault"            # legacy Keychain record kind (pre-age storage; vault-migrate.sh)
 KC_STAGES=(production sandbox common)
 KC_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 YAML2JSON="$KC_HERE/yaml2json"
 
+# Vault location (any dir works; iCloud Drive gives off-machine durability). Override via env.
+VAULT_DIR="${SECRETS_VAULT_DIR:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/secrets-vault}"
+VAULT_KC_SERVICE="secrets-vault"   # Keychain item caching the plaintext age identity
+VAULT_KC_ACCOUNT="${SECRETS_VAULT_KC_ACCOUNT:-age-identity}"   # override only for tests
+VAULT_KC_KIND="secrets-vault-identity"
+
 # Root to scan for projects (each declares itself via environments/manifest.yaml). Override via env.
 SECRETS_VAULT_REPOS_ROOT="${SECRETS_VAULT_REPOS_ROOT:-$HOME/Projects}"
 
-# ---- raw keychain access (service-scoped) ------------------------------------
+# ---- legacy keychain access (read-only: identity cache + vault-migrate.sh) ----
 
-# kc_put <service> <account> <blob>   (idempotent; -U updates in place)
 kc_put() {
   security add-generic-password -U -D "$KC_KIND" -s "$1" -a "$2" -j "secrets-vault" -w "$3"
 }
@@ -43,8 +56,149 @@ kc_get() {
 kc_exists() { security find-generic-password -s "$1" -a "$2" >/dev/null 2>&1; }
 kc_delete() { security delete-generic-password -s "$1" -a "$2" >/dev/null 2>&1; }
 
-vault_get() { kc_get "$1" "$2"; }            # vault_get <service> <stage>
-vault_put() { kc_put "$1" "$2" "$3"; }       # vault_put <service> <stage> <blob>
+# ---- age identity ------------------------------------------------------------
+
+vault_require_age() {
+  command -v age >/dev/null 2>&1 && command -v age-keygen >/dev/null 2>&1 && return 0
+  echo "age not found — install with: brew install age" >&2
+  return 1
+}
+
+_kc_identity_get() { kc_get "$VAULT_KC_SERVICE" "$VAULT_KC_ACCOUNT"; }
+
+# Cache the identity in the login Keychain. Hex-encoded and fed to `security -i` on stdin
+# so the secret never appears in any process argv.
+_kc_identity_put() {
+  local hex
+  hex="$(printf '%s' "$1" | xxd -p | tr -d '\n')"
+  printf 'add-generic-password -U -D "%s" -s "%s" -a "%s" -j "secrets-vault" -w %s\n' \
+    "$VAULT_KC_KIND" "$VAULT_KC_SERVICE" "$VAULT_KC_ACCOUNT" "$hex" | security -i >/dev/null
+}
+
+# identity_load -> the AGE-SECRET-KEY-1… line on stdout.
+# Order: $SECRETS_VAULT_IDENTITY_FILE (tests/CI) | Keychain cache | identity.age (passphrase
+# prompt, then re-cache) | error. Memoized per process.
+_VAULT_IDENTITY=""
+identity_load() {
+  if [[ -n "${_VAULT_IDENTITY:-}" ]]; then printf '%s\n' "$_VAULT_IDENTITY"; return 0; fi
+  local id=""
+  if [[ -n "${SECRETS_VAULT_IDENTITY_FILE:-}" ]]; then
+    id="$(grep -m1 '^AGE-SECRET-KEY-1' "$SECRETS_VAULT_IDENTITY_FILE")" \
+      || { echo "no age identity in \$SECRETS_VAULT_IDENTITY_FILE" >&2; return 1; }
+  elif id="$(_kc_identity_get)" && [[ -n "$id" ]]; then
+    :
+  elif _vault_materialize "$VAULT_DIR/identity.age" 2>/dev/null; then
+    echo "vault identity not in Keychain — unlocking recovery copy $VAULT_DIR/identity.age" >&2
+    id="$(age -d "$VAULT_DIR/identity.age" | grep -m1 '^AGE-SECRET-KEY-1')" \
+      || { echo "could not decrypt identity.age (wrong passphrase?)" >&2; return 1; }
+    _kc_identity_put "$id"
+    echo "identity cached in login Keychain — no passphrase needed next time" >&2
+  else
+    echo "no vault identity: run vault-init.sh (new vault) — or, on a new Mac, wait for" >&2
+    echo "iCloud Drive to sync $VAULT_DIR and run vault-init.sh --recover" >&2
+    return 1
+  fi
+  _VAULT_IDENTITY="$id"
+  printf '%s\n' "$id"
+}
+
+# _recipient_file -> path to the public-key file (regenerated from the identity if missing)
+_recipient_file() {
+  local rf="$VAULT_DIR/recipient.txt" id
+  if ! _vault_materialize "$rf" 2>/dev/null; then
+    id="$(identity_load)" || return 1
+    mkdir -p "$VAULT_DIR"
+    printf '%s\n' "$id" | age-keygen -y >"$rf.tmp.$$" && mv "$rf.tmp.$$" "$rf"
+  fi
+  printf '%s' "$rf"
+}
+
+# ---- age vault storage -------------------------------------------------------
+
+# _vault_materialize <path>  -> 0 if the file exists (downloading a dataless iCloud
+# placeholder if needed), 1 if it doesn't.
+_vault_materialize() {
+  local f="$1" ph i=0
+  [[ -f "$f" ]] && return 0
+  ph="$(dirname "$f")/.$(basename "$f").icloud"
+  [[ -f "$ph" ]] || return 1
+  command -v brctl >/dev/null 2>&1 && brctl download "$f" >/dev/null 2>&1 || true
+  while (( i < 40 )); do
+    [[ -f "$f" ]] && return 0
+    sleep 0.5; i=$((i+1))
+  done
+  echo "vault file is in iCloud but not downloading: $f — check network/iCloud Drive status" >&2
+  return 1
+}
+
+# vault_get <service> <stage>  -> decrypted dotenv blob on stdout; 1 if the stage is absent
+vault_get() {
+  local f="$VAULT_DIR/$1/$2.age" id
+  _vault_materialize "$f" || return 1
+  id="$(identity_load)" || return 1
+  age -d -i <(printf '%s\n' "$id") "$f"
+}
+
+# vault_put <service> <stage> <blob>  — encrypt to the vault (atomic tmp+mv; needs only the
+# public recipient). Creating a brand-new service requires VAULT_ALLOW_NEW_SERVICE=1 (see
+# vault_ensure_service) to guard against typo'd --service silently creating a namespace.
+vault_put() {
+  local svc="$1" stage="$2" blob="$3" dir rf tmp
+  dir="$VAULT_DIR/$svc"
+  if [[ ! -d "$dir" && "${VAULT_ALLOW_NEW_SERVICE:-0}" != 1 ]]; then
+    echo "service '$svc' does not exist in the vault ($VAULT_DIR) — pass --new-service to create it" >&2
+    return 1
+  fi
+  rf="$(_recipient_file)" || return 1
+  mkdir -p "$dir"
+  tmp="$dir/.$stage.age.tmp.$$"
+  printf '%s\n' "$blob" | age -e -R "$rf" -o "$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$dir/$stage.age"
+}
+
+vault_exists() { [[ -f "$VAULT_DIR/$1/$2.age" ]]; }
+vault_delete_stage() { rm -f "$VAULT_DIR/$1/$2.age"; }
+
+# vault_services -> service names (one per line); skips key files and iCloud conflict copies
+vault_services() {
+  local d b
+  [[ -d "$VAULT_DIR" ]] || return 0
+  for d in "$VAULT_DIR"/*/; do
+    [[ -d "$d" ]] || continue
+    b="$(basename "$d")"
+    case "$b" in .*|*' '[0-9]) continue ;; esac
+    printf '%s\n' "$b"
+  done
+}
+
+# vault_check_migration <service> — refuse to operate on a service whose data still lives
+# only in the legacy Keychain storage (pre-age). Call after resolving the service.
+vault_check_migration() {
+  local svc="$1" st
+  for st in "${KC_STAGES[@]}"; do vault_exists "$svc" "$st" && return 0; done
+  for st in "${KC_STAGES[@]}"; do
+    if kc_exists "$svc" "$st"; then
+      echo "legacy Keychain data found for '$svc' but no age vault — run vault-migrate.sh --service '$svc' first" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
+# vault_ensure_service <service> <allow_new:0|1> <yes:0|1> — typo guard: creating a new
+# service namespace needs --new-service / --yes / a TTY confirmation.
+vault_ensure_service() {
+  local svc="$1" allow="${2:-0}" yes="${3:-0}" ans
+  [[ -d "$VAULT_DIR/$svc" ]] && return 0
+  if [[ "$allow" == 1 || "$yes" == 1 ]]; then VAULT_ALLOW_NEW_SERVICE=1; return 0; fi
+  echo "service '$svc' does not exist in the vault ($VAULT_DIR)" >&2
+  ans=""
+  { read -r -p "Create new service '$svc'? [y/N] " ans </dev/tty; } 2>/dev/null \
+    || { echo "aborted: not a TTY — pass --new-service to create a new service namespace" >&2; return 1; }
+  [[ "$ans" == [yY]* ]] || { echo "aborted" >&2; return 1; }
+  VAULT_ALLOW_NEW_SERVICE=1
+}
 
 # ---- dotenv blob helpers -----------------------------------------------------
 

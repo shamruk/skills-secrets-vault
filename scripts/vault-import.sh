@@ -8,25 +8,32 @@
 # requires typing 'overwrite' at the TTY. Pass --yes to skip the prompt (automation; explicit
 # opt-in). Without a TTY and without --yes, a destructive overwrite aborts rather than clobber.
 #
+# Comments/blank lines/ordering in the stored blob are preserved: existing keys are updated
+# in place, new keys are appended at the end.
+#
 # Usage:
-#   vault-import.sh <stage> [--service <ns>] [--force] [--yes] [--dry-run] [FILE]
+#   vault-import.sh <stage> [--service <ns>] [--force] [--yes] [--dry-run] [--new-service] [FILE]
 #   cat secrets.env | vault-import.sh sandbox --service lunai.care
 
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/kc-lib.sh"
 
-STAGE=""; SVC=""; FORCE=0; DRY=0; YES=0; FILE=""
+STAGE=""; SVC=""; FORCE=0; DRY=0; YES=0; NEWSVC=0; FILE=""
 while [[ $# -gt 0 ]]; do case "$1" in
   --service) SVC="$2"; shift 2 ;;
   --force)   FORCE=1; shift ;;
   --dry-run) DRY=1; shift ;;
   --yes)     YES=1; shift ;;
+  --new-service) NEWSVC=1; shift ;;
   -*) echo "unknown flag: $1" >&2; exit 2 ;;
   *) if [[ -z "$STAGE" ]]; then STAGE="$1"; else FILE="$1"; fi; shift ;;
 esac; done
-case "$STAGE" in production|sandbox|common) ;; *) echo "usage: $0 <production|sandbox|common> [--service X] [--force] [FILE]" >&2; exit 2 ;; esac
+case "$STAGE" in production|sandbox|common) ;; *) echo "usage: $0 <production|sandbox|common> [--service X] [--force] [--new-service] [FILE]" >&2; exit 2 ;; esac
 SERVICE="$(pick_service "$SVC")"
 [[ -n "$SERVICE" ]] || { echo "no service: pass --service, set SECRETS_VAULT_SERVICE, or run inside a project" >&2; exit 2; }
+vault_require_age
+vault_check_migration "$SERVICE"
+vault_ensure_service "$SERVICE" "$NEWSVC" "$YES"
 
 incoming="$(cat -- "${FILE:-/dev/stdin}")"
 current="$(vault_get "$SERVICE" "$STAGE" 2>/dev/null || true)"
@@ -44,7 +51,7 @@ while IFS= read -r k; do
     if [[ "$FORCE" == 1 ]]; then
       # Filling a blank is safe; replacing/blanking an existing non-blank value is destructive.
       [[ -n "$oldv" ]] && destructive+=("$k"$'\t'"$(mask "$oldv")"$'\t'"$(mask "$newv")")
-      current="$(printf '%s\n' "$current" | awk -v k="$k" -v val="$newv" 'BEGIN{FS=OFS="="} $1==k{print k"="val;next}{print}')"
+      current="$(printf '%s\n' "$current" | NEWV="$newv" awk -v k="$k" 'BEGIN{FS=OFS="="} $1==k{print k"="ENVIRON["NEWV"];next}{print}')"
       ((forced++)) || true
     else
       echo "CONFLICT $k (exists with different value — use --force to overwrite)" >&2
@@ -56,8 +63,9 @@ while IFS= read -r k; do
   fi
 done < <(de_keys "$incoming")
 
-# tidy: drop a possible leading blank line, stable sort
-current="$(printf '%s\n' "$current" | grep -vE '^[[:space:]]*$' | sort)"
+# tidy: appending to an initially-empty blob leaves a leading blank line — drop it.
+# (No sorting/stripping: comments, blank lines and key order in the blob are preserved.)
+while [[ "$current" == $'\n'* ]]; do current="${current#$'\n'}"; done
 
 echo "service=$SERVICE stage=$STAGE  added=$added overwritten=$forced unchanged=$same conflicts=$conflict"
 

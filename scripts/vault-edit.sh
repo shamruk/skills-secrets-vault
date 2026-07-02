@@ -8,24 +8,28 @@
 # Pass --yes to skip the prompt (e.g. an intentional non-interactive removal).
 #
 # Usage:
-#   vault-edit.sh <stage> [--service <namespace>] [--yes]
+#   vault-edit.sh <stage> [--service <namespace>] [--yes] [--new-service]
 #   service resolves from: --service | $SECRETS_VAULT_SERVICE | nearest project's manifest.yaml
 
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/kc-lib.sh"
 
-STAGE=""; SVC=""; YES=0
+STAGE=""; SVC=""; YES=0; NEWSVC=0
 while [[ $# -gt 0 ]]; do case "$1" in
   --service) SVC="$2"; shift 2 ;;
   --yes) YES=1; shift ;;
+  --new-service) NEWSVC=1; shift ;;
   -*) echo "unknown flag: $1" >&2; exit 2 ;;
   *) STAGE="$1"; shift ;;
 esac; done
 case "$STAGE" in production|sandbox|common) ;; *)
-  echo "usage: $0 <production|sandbox|common> [--service X]" >&2; exit 2 ;;
+  echo "usage: $0 <production|sandbox|common> [--service X] [--new-service]" >&2; exit 2 ;;
 esac
 SERVICE="$(pick_service "$SVC")"
 [[ -n "$SERVICE" ]] || { echo "no service: pass --service, set SECRETS_VAULT_SERVICE, or run inside a project" >&2; exit 2; }
+vault_require_age
+vault_check_migration "$SERVICE"
+vault_ensure_service "$SERVICE" "$NEWSVC" "$YES"
 
 tmp="$(mktemp "${TMPDIR:-/tmp}/vault-${STAGE}.XXXXXX")"; chmod 600 "$tmp"
 trap 'rm -f "$tmp"' EXIT

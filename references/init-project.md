@@ -1,12 +1,16 @@
 # Onboarding a new project into secrets-vault
 
 Goal: give a repo an `environments/` folder (manifest + scopes + variables) and load its secrets
-into a Keychain vault, so `secrets.sh` can check/print/apply them. Do this once per project.
+into the age vault, so `secrets.sh` can check/print/apply them. Do this once per project.
+
+Prerequisite (once per machine): `brew install age` and `scripts/vault-init.sh` (see SKILL.md
+"Setup, migration & recovery").
 
 ## 1. Decide the ecosystem `service`
-Secrets are grouped by a Keychain **service** namespace shared by related projects (e.g.
-`lunai.care`). Reuse the existing one if this repo belongs to a known ecosystem; otherwise pick a
-new stable name. The three stages are always `production`, `sandbox`, `common`.
+Secrets are grouped by a **service** namespace — a directory in the vault — shared by related
+projects (e.g. `lunai.care`). Check `scripts/vault-list.sh --all` for existing services and reuse
+the ecosystem's one if this repo belongs to it; otherwise pick a new stable name. The three
+stages are always `production`, `sandbox`, `common`.
 
 ## 2. Discover what the project uses
 Scan, from the repo root:
@@ -24,7 +28,7 @@ grep -rnE 'secrets\.|vars\.' .github/workflows 2>/dev/null
 ```
 
 ## 3. Classify every value: secret vs variable
-- **Secret** → goes in the Keychain vault (API keys, tokens, passwords, webhook secrets).
+- **Secret** → goes in the vault (API keys, tokens, passwords, webhook secrets).
 - **Variable** (non-secret) → committed dotenv files (URLs, project IDs, site IDs, bundle IDs,
   publishable keys). When unsure, treat as a secret.
 
@@ -65,7 +69,7 @@ Pick `repo:` to match how you'll address it: `secrets.sh … <repo>/<scope>`.
 ## 6. Load secrets into the vault
 Per stage, assemble a temporary dotenv file of the **secret** values (env-neutral names) and:
 ```bash
-scripts/vault-import.sh sandbox    --service <ns> /path/to/sandbox-secrets.env
+scripts/vault-import.sh sandbox    --service <ns> --new-service /path/to/sandbox-secrets.env  # --new-service only for a brand-new service
 scripts/vault-import.sh production  --service <ns> /path/to/prod-secrets.env   # often blanks to fill later
 scripts/vault-import.sh common     --service <ns> /path/to/shared-secrets.env  # values identical across stages
 ```

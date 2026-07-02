@@ -81,6 +81,11 @@ if [[ -z "$STAGE" ]]; then
 fi
 
 # ---- load this service's vaults (once) ----
+# Fail fast (instead of silently reporting all-blank) if the vault layer itself is broken:
+# age missing, data still in the legacy Keychain, or the identity can't be loaded.
+vault_require_age
+vault_check_migration "$SERVICE"
+if [[ -d "$VAULT_DIR/$SERVICE" ]]; then identity_load >/dev/null; fi
 PROD="$(vault_get "$SERVICE" production 2>/dev/null || true)"
 SAND="$(vault_get "$SERVICE" sandbox  2>/dev/null || true)"
 COMMON="$(vault_get "$SERVICE" common 2>/dev/null || true)"
@@ -176,7 +181,7 @@ apply)
     for e in "${KEYS[@]}"; do IFS=$'\t' read -r dest src st <<<"$e"
       v="$(resolve "$src" "$st")"; [[ -z "$v" ]] && { echo "  skip $dest (blank)"; continue; }
       if grep -q "^$dest=" "$tmp"; then
-        awk -v k="$dest" -v val="$v" 'BEGIN{FS=OFS="="} $1==k{print k"="val; next} {print}' "$tmp" >"$tmp.n" && mv "$tmp.n" "$tmp"
+        VAL="$v" awk -v k="$dest" 'BEGIN{FS=OFS="="} $1==k{print k"="ENVIRON["VAL"]; next} {print}' "$tmp" >"$tmp.n" && mv "$tmp.n" "$tmp"
       else printf '%s=%s\n' "$dest" "$v" >>"$tmp"; fi
       echo "  set $dest"
     done
