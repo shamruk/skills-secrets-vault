@@ -62,6 +62,36 @@ or when modifying the skill itself — using the skill never requires it.
 - "Keep Downloaded" pinning is Finder-only; Apple exposes no CLI/API for it. The files are
   tiny (~hundreds of bytes), so eviction is unlikely regardless.
 
+## Background sync agent (`vault-agent.sh`)
+
+Covers the case where *no* vault-writing process ever has iCloud access (all headless/
+sandboxed): without it the mirror would go stale with only log warnings nobody reads.
+
+- **Why an .app**: TCC never prompts for non-app processes — a bash LaunchAgent is denied
+  *silently*, and granting `/bin/bash` Full Disk Access would be over-broad. `install`
+  compiles a local AppleScript applet (`osacompile`) at
+  `~/Library/Application Support/secrets-vault/SecretsVaultSync.app` (`LSUIElement=1`,
+  bundle id `dev.secrets-vault.sync`, ad-hoc signed). As a real app it can raise the normal
+  on-screen permission prompt, hold a persistent grant, and appear by name in System
+  Settings.
+- **LaunchAgent** `~/Library/LaunchAgents/dev.secrets-vault.sync.plist`: runs the applet
+  binary directly; `WatchPaths` on `$VAULT_DIR` + `StartInterval` 3600 + `RunAtLoad`;
+  `ThrottleInterval` 60; log at `~/Library/Logs/secrets-vault-sync.log`.
+- **Trigger**: `vault_put` writes `$VAULT_DIR/.last-write` after every local write —
+  WatchPaths is non-recursive, so a root-level file is needed to fire on stage writes in
+  subdirectories.
+- **Applet behavior**: runs `vault-sync.sh --agent` (quiet on success, records
+  `last-sync` in the app-support dir). On failure it shows a `display dialog` — "iCloud
+  backup is not updating … data safe locally" with an **Open Settings** button (deep link
+  `…?Privacy_FilesAndFolders`) — throttled to once per 6 h via a `last-nag` timestamp.
+  Problems land on the user's screen, never only in logs. (`display notification` is
+  deliberately not used — unreliable from applets.)
+- **Permissions**: the narrow, correct grant is Files & Folders → SecretsVaultSync →
+  iCloud Drive, obtained via the normal on-screen prompt on first access (confirmed
+  working). Full Disk Access is NOT required — never advise it for this agent.
+- Re-running `install` rebuilds the app; macOS may show the permission prompt once more
+  (the grant is keyed to the signature).
+
 ## Legacy migration (pre-age backend)
 
 The previous backend stored each (service, stage) as a login-Keychain generic-password record
@@ -113,7 +143,8 @@ age -d -i <(age -d "$VAULT_DIR/identity.age") "$VAULT_DIR/<service>/<stage>.age"
 | `scripts/secrets.sh` | scope engine: check/print/export/apply to targets |
 | `scripts/vault-{list,show,edit,import,delete}.sh` | vault CRUD |
 | `scripts/vault-init.sh` | identity setup / `--recover` |
-| `scripts/vault-sync.sh` | reconcile primary ↔ mirror (push, `--pull`) |
+| `scripts/vault-sync.sh` | reconcile primary ↔ mirror (push, `--pull`, `--agent`) |
+| `scripts/vault-agent.sh` | background mirror agent (install/status/uninstall) |
 | `scripts/vault-migrate.sh` | one-time legacy Keychain → vault migration |
 | `scripts/yaml2json` | YAML shim (ruby → yq → python3+PyYAML) for `manifest.yaml` |
 

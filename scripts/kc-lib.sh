@@ -225,6 +225,9 @@ vault_put() {
   printf '%s\n' "$blob" | age -e -R "$rf" -o "$tmp" || { rm -f "$tmp"; return 1; }
   chmod 600 "$tmp"
   mv -f "$tmp" "$dir/$stage.age"
+  # WatchPaths only sees direct children of $VAULT_DIR; stage files live in subdirs, so a
+  # root-level write is what wakes the background sync agent.
+  date +%s >"$VAULT_DIR/.last-write" 2>/dev/null || true
   _mirror_after_write "$svc/$stage.age"
 }
 

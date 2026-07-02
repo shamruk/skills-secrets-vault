@@ -94,6 +94,9 @@ they need; don't run them preemptively:
   Non-destructive; prints cleanup steps to run after verifying.
 - `scripts/vault-sync.sh` — a vault write warned that the durability mirror wasn't updated
   (harmless; the write itself succeeded). Retries the mirror; also self-heals on later writes.
+- `scripts/vault-agent.sh install` — sets up a background agent that keeps the durability
+  mirror fresh automatically (surfaces problems to the user on screen, never to you).
+  `vault-agent.sh status` answers "are backups current?".
 - A brand-new service name needs `--new-service` on `vault-edit`/`vault-import` (typo guard).
 
 ## Multi-repo, submodules & monorepos (read before creating a scope)
