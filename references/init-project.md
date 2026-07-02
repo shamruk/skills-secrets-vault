@@ -3,8 +3,8 @@
 Goal: give a repo an `environments/` folder (manifest + scopes + variables) and load its secrets
 into the age vault, so `secrets.sh` can check/print/apply them. Do this once per project.
 
-Prerequisite (once per machine): `brew install age` and `scripts/vault-init.sh` (see SKILL.md
-"Setup, migration & recovery").
+Prerequisite (once per machine): `scripts/vault-init.sh` — skip if the vault already works;
+any command will say what's missing otherwise (see SKILL.md "One-time setup").
 
 ## 1. Decide the ecosystem `service`
 Secrets are grouped by a **service** namespace — a directory in the vault — shared by related
