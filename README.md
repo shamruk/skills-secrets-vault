@@ -1,37 +1,38 @@
 # secrets-vault
 
 A tiny, dependency-light secrets manager for solo developers and small teams:
-**[age](https://github.com/FiloSottile/age)-encrypted files in iCloud Drive** as the source of
-truth, the **macOS login Keychain** for prompt-free daily use, and a set of bash scripts that
-sync secrets to **Cloudflare Workers, GitHub Actions, Codemagic, Appwrite, or local
-`.env`/`.dev.vars` files** — per project, per stage.
+**[age](https://github.com/FiloSottile/age)-encrypted files** in a local vault **mirrored to
+iCloud Drive** for durability, the **macOS login Keychain** for prompt-free daily use, and a
+set of bash scripts that sync secrets to **Cloudflare Workers, GitHub Actions, Codemagic,
+Appwrite, or local `.env`/`.dev.vars` files** — per project, per stage.
 
 Built as a [Claude Code](https://claude.com/claude-code) skill, but every script works
 standalone from any shell.
 
 ```
-                 daily use (no prompts)                     disaster recovery
-┌──────────────┐  identity   ┌─────────────────────────┐   ┌──────────────────────┐
-│ login        │ ──────────▶ │ iCloud Drive            │   │ new Mac              │
-│ Keychain     │   decrypt   │  secrets-vault/         │   │  1. sign in to iCloud│
-│ (this Mac)   │             │   ├ recipient.txt  pub  │──▶│  2. vault-init.sh    │
-└──────────────┘             │   ├ identity.age   🔒   │   │     --recover        │
-      ▲                      │   └ acme.dev/           │   │  3. one passphrase   │
-      └── cached on unlock ──│      ├ production.age   │   │  → everything back   │
-                             │      ├ sandbox.age      │   └──────────────────────┘
-                             │      └ common.age       │
-                             └─────────────────────────┘
+      daily use (no prompts, no TCC)          durability                disaster recovery
+┌──────────────┐ identity ┌────────────────┐   mirror   ┌────────────┐ ┌──────────────────────┐
+│ login        │ ───────▶ │ ~/.secrets-    │ ─────────▶ │ iCloud     │ │ new Mac              │
+│ Keychain     │  decrypt │  vault/        │  on every  │ Drive      │ │  1. sign in to iCloud│
+│ (this Mac)   │          │  ├ recipient   │   write    │ secrets-   │▶│  2. vault-init.sh    │
+└──────────────┘          │  ├ identity.age│            │ vault/     │ │     --recover        │
+      ▲                   │  └ acme.dev/   │ ◀───────── │ (same      │ │  3. one passphrase   │
+      └─ cached on unlock │    ├ prod .age │  pull on   │  files)    │ │  → everything back   │
+                          │    └ sand .age │  new Mac   └────────────┘ └──────────────────────┘
+                          └────────────────┘
 ```
 
 ## Why
 
-- **Lose the laptop, keep the secrets.** The vault is ordinary files syncing through iCloud
-  Drive. Recovery on a new Mac = iCloud sign-in + one passphrase.
-- **No prompts in daily work.** The age identity is cached in the login Keychain; scripts
-  decrypt silently. Writes need only the *public* key.
+- **Lose the laptop, keep the secrets.** Every write is mirrored to iCloud Drive as ordinary
+  files. Recovery on a new Mac = iCloud sign-in + one passphrase.
+- **No prompts in daily work — and no macOS permission walls.** The age identity is cached in
+  the login Keychain; scripts decrypt silently. The working copy lives at `~/.secrets-vault`
+  (a plain home dir), so sandboxed/headless processes never hit the per-app TCC gate that
+  guards iCloud Drive. Writes need only the *public* key.
 - **No vendor, no service, no subscription.** Plain `age` files you can decrypt by hand with
-  one command, forever. Works with any synced/backed-up folder (`$SECRETS_VAULT_DIR`), not
-  just iCloud.
+  one command, forever. The mirror works with any synced/backed-up folder
+  (`$SECRETS_VAULT_CLOUD_DIR`), not just iCloud.
 - **Secrets never touch your repos.** Repos commit only non-secret metadata: which keys each
   deploy target needs, and non-secret variables.
 - **One vault, many projects.** Related repos share a *service* namespace; each key exists
@@ -106,10 +107,10 @@ The vault is just age files. With the Keychain-cached identity:
 
 ```bash
 age -d -i <(security find-generic-password -s secrets-vault -a age-identity -w | xxd -r -p) \
-  "$HOME/Library/Mobile Documents/com~apple~CloudDocs/secrets-vault/acme.dev/sandbox.age"
+  ~/.secrets-vault/acme.dev/sandbox.age
 ```
 
-Or from nothing but the iCloud folder and your passphrase:
+Or from nothing but the iCloud mirror and your passphrase:
 
 ```bash
 age -d -i <(age -d identity.age) acme.dev/sandbox.age

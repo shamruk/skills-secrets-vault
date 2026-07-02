@@ -19,6 +19,10 @@ SERVICE=""
 [[ "$ALL" == 1 ]] || SERVICE="$(pick_service "$SVC" || true)"
 
 echo "vault: $VAULT_DIR"
+if _cloud_enabled; then
+  if [[ -f "$VAULT_DIR/.mirror-pending" ]]; then echo "mirror: $VAULT_CLOUD_DIR (PENDING — run vault-sync.sh)"
+  else echo "mirror: $VAULT_CLOUD_DIR"; fi
+fi
 
 count_row() {  # count_row <service> <stage> <label-width-fmt applied by caller>
   local blob total filled

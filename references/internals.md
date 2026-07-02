@@ -7,18 +7,31 @@ or when modifying the skill itself — using the skill never requires it.
 
 - **Vault** = a directory of [age](https://github.com/FiloSottile/age)-encrypted files:
   `$VAULT_DIR/<service>/<stage>.age`, one encrypted dotenv blob per (service, stage).
-  `VAULT_DIR` defaults to `~/Library/Mobile Documents/com~apple~CloudDocs/secrets-vault`
-  (iCloud Drive → survives losing the machine); override with `$SECRETS_VAULT_DIR` (any dir
-  works, e.g. a git repo or another synced folder).
+- **Two locations** (both plain files, kept in sync by the lib):
+  - **Primary** `$VAULT_DIR`, default `~/.secrets-vault` (override `$SECRETS_VAULT_DIR`).
+    A plain home dir on purpose: macOS TCC gates iCloud Drive *per app* and checks the
+    resolved path (symlinks don't dodge it), so headless/sandboxed processes get EPERM
+    inside `~/Library/Mobile Documents`. All reads/writes hit the primary — no permission
+    prompts ever.
+  - **Mirror** `$VAULT_CLOUD_DIR`, default the iCloud Drive `secrets-vault/` folder
+    (override `$SECRETS_VAULT_CLOUD_DIR`; `none` disables). Durability copy — this is what
+    survives losing the Mac.
+- **Sync**: every `vault_put` mirrors the written file (atomic cp+mv, content-compared). If
+  the mirror is unreachable (TCC-blocked app), the write still succeeds locally, a
+  `.mirror-pending` marker is set, and the next vault write from a permitted app — or
+  `vault-sync.sh` — flushes everything pending. Reads fall back: a file missing from the
+  primary is pulled in from the mirror (`_cloud_pull`). `vault-sync.sh --pull` localizes a
+  whole vault on a new machine (primary always wins; pull never overwrites).
 - **One X25519 age identity for the whole vault**, held in three places:
-  - `$VAULT_DIR/recipient.txt` — the public key. Every write encrypts with this, so writing
-    never needs the secret identity. Public-safe. Regenerated from the identity if missing.
+  - `recipient.txt` (primary + mirror) — the public key. Every write encrypts with this, so
+    writing never needs the secret identity. Public-safe. Regenerated from the identity if
+    missing.
   - macOS **login Keychain** item (`-s secrets-vault -a age-identity`,
     kind `secrets-vault-identity`) — the plaintext identity, cached for prompt-free reads.
     Stored hex-encoded and written via `security -i` on stdin so it never appears in argv.
-  - `$VAULT_DIR/identity.age` — the identity encrypted with a user passphrase (`age -p`,
-    scrypt). The disaster-recovery copy; syncs beside the vault. Useless without the
-    passphrase.
+  - `identity.age` (primary + mirror) — the identity encrypted with a user passphrase
+    (`age -p`, scrypt). The disaster-recovery copy; the mirror copy is the one that matters.
+    Useless without the passphrase.
 - **Identity resolution order** (`identity_load` in `kc-lib.sh`, memoized per process):
   `$SECRETS_VAULT_IDENTITY_FILE` (tests/CI escape hatch; Keychain never touched) → Keychain
   cache → decrypt `identity.age` (passphrase prompt on TTY, then re-cache into the Keychain)
@@ -35,8 +48,11 @@ or when modifying the skill itself — using the skill never requires it.
 - `vault-import`/`vault-edit` preserve blob structure: existing keys are rewritten in place,
   new keys appended; no sorting, comments and blank lines survive.
 
-## iCloud specifics
+## iCloud specifics (mirror dir only)
 
+- **TCC**: iCloud Drive access is granted per responsible app; denials persist and headless
+  processes can't answer the prompt. This is why the primary lives outside it. A mirror
+  failure is never fatal — the local write wins and syncing self-heals.
 - Evicted ("dataless") files: `_vault_materialize` detects the `.<name>.icloud` placeholder,
   calls `brctl download`, and polls up to ~20 s before failing with a friendly error. On
   non-iCloud dirs it's a no-op. (Note: some macOS builds ship a `brctl` without a `download`
@@ -81,7 +97,8 @@ age -d -i <(age -d "$VAULT_DIR/identity.age") "$VAULT_DIR/<service>/<stage>.age"
 
 | Variable | Effect |
 |---|---|
-| `SECRETS_VAULT_DIR` | vault location (default: iCloud Drive `secrets-vault/`) |
+| `SECRETS_VAULT_DIR` | primary vault location (default `~/.secrets-vault`) |
+| `SECRETS_VAULT_CLOUD_DIR` | mirror location (default iCloud Drive `secrets-vault/`; `none` disables) |
 | `SECRETS_VAULT_IDENTITY_FILE` | read the age identity from this file; Keychain untouched (tests/CI) |
 | `SECRETS_VAULT_KC_ACCOUNT` | Keychain account name for the identity cache (tests only) |
 | `SECRETS_VAULT_SERVICE` | default service when no `--service`/project context |
@@ -96,6 +113,7 @@ age -d -i <(age -d "$VAULT_DIR/identity.age") "$VAULT_DIR/<service>/<stage>.age"
 | `scripts/secrets.sh` | scope engine: check/print/export/apply to targets |
 | `scripts/vault-{list,show,edit,import,delete}.sh` | vault CRUD |
 | `scripts/vault-init.sh` | identity setup / `--recover` |
+| `scripts/vault-sync.sh` | reconcile primary ↔ mirror (push, `--pull`) |
 | `scripts/vault-migrate.sh` | one-time legacy Keychain → vault migration |
 | `scripts/yaml2json` | YAML shim (ruby → yq → python3+PyYAML) for `manifest.yaml` |
 

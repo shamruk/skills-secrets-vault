@@ -27,8 +27,13 @@ KC_STAGES=(production sandbox common)
 KC_HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 YAML2JSON="$KC_HERE/yaml2json"
 
-# Vault location (any dir works; iCloud Drive gives off-machine durability). Override via env.
-VAULT_DIR="${SECRETS_VAULT_DIR:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/secrets-vault}"
+# Vault locations. The PRIMARY is a plain home dir: macOS TCC gates iCloud Drive per app, so
+# headless/sandboxed processes get EPERM there — the primary must never be permission-gated.
+# Every write is mirrored to the CLOUD dir (iCloud Drive) for off-machine durability; reads
+# fall back to it (copy-in) when the primary lacks a file. Set SECRETS_VAULT_CLOUD_DIR=none
+# to disable mirroring.
+VAULT_DIR="${SECRETS_VAULT_DIR:-$HOME/.secrets-vault}"
+VAULT_CLOUD_DIR="${SECRETS_VAULT_CLOUD_DIR:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/secrets-vault}"
 VAULT_KC_SERVICE="secrets-vault"   # Keychain item caching the plaintext age identity
 VAULT_KC_ACCOUNT="${SECRETS_VAULT_KC_ACCOUNT:-age-identity}"   # override only for tests
 VAULT_KC_KIND="secrets-vault-identity"
@@ -78,18 +83,28 @@ _kc_identity_put() {
 # identity_load -> the AGE-SECRET-KEY-1… line on stdout.
 # Order: $SECRETS_VAULT_IDENTITY_FILE (tests/CI) | Keychain cache | identity.age (passphrase
 # prompt, then re-cache) | error. Memoized per process.
+# _identity_age_path -> path of the passphrase-encrypted recovery copy (primary, else cloud)
+_identity_age_path() {
+  if [[ -f "$VAULT_DIR/identity.age" ]]; then printf '%s' "$VAULT_DIR/identity.age"; return 0; fi
+  if _cloud_enabled && _vault_materialize "$VAULT_CLOUD_DIR/identity.age" 2>/dev/null \
+     && [[ -r "$VAULT_CLOUD_DIR/identity.age" ]]; then
+    printf '%s' "$VAULT_CLOUD_DIR/identity.age"; return 0
+  fi
+  return 1
+}
+
 _VAULT_IDENTITY=""
 identity_load() {
   if [[ -n "${_VAULT_IDENTITY:-}" ]]; then printf '%s\n' "$_VAULT_IDENTITY"; return 0; fi
-  local id=""
+  local id="" idfile=""
   if [[ -n "${SECRETS_VAULT_IDENTITY_FILE:-}" ]]; then
     id="$(grep -m1 '^AGE-SECRET-KEY-1' "$SECRETS_VAULT_IDENTITY_FILE")" \
       || { echo "no age identity in \$SECRETS_VAULT_IDENTITY_FILE" >&2; return 1; }
   elif id="$(_kc_identity_get)" && [[ -n "$id" ]]; then
     :
-  elif _vault_materialize "$VAULT_DIR/identity.age" 2>/dev/null; then
-    echo "vault identity not in Keychain — unlocking recovery copy $VAULT_DIR/identity.age" >&2
-    id="$(age -d "$VAULT_DIR/identity.age" | grep -m1 '^AGE-SECRET-KEY-1')" \
+  elif idfile="$(_identity_age_path)"; then
+    echo "vault identity not in Keychain — unlocking recovery copy $idfile" >&2
+    id="$(age -d "$idfile" | grep -m1 '^AGE-SECRET-KEY-1')" \
       || { echo "could not decrypt identity.age (wrong passphrase?)" >&2; return 1; }
     _kc_identity_put "$id"
     echo "identity cached in login Keychain — no passphrase needed next time" >&2
@@ -102,13 +117,15 @@ identity_load() {
   printf '%s\n' "$id"
 }
 
-# _recipient_file -> path to the public-key file (regenerated from the identity if missing)
+# _recipient_file -> path to the public-key file (pulled from the mirror or regenerated
+# from the identity if missing)
 _recipient_file() {
   local rf="$VAULT_DIR/recipient.txt" id
-  if ! _vault_materialize "$rf" 2>/dev/null; then
+  if [[ ! -f "$rf" ]] && ! _cloud_pull "recipient.txt" 2>/dev/null; then
     id="$(identity_load)" || return 1
     mkdir -p "$VAULT_DIR"
     printf '%s\n' "$id" | age-keygen -y >"$rf.tmp.$$" && mv "$rf.tmp.$$" "$rf"
+    _mirror_after_write "recipient.txt"
   fi
   printf '%s' "$rf"
 }
@@ -131,10 +148,63 @@ _vault_materialize() {
   return 1
 }
 
+# ---- cloud mirror (durability copy in iCloud Drive) ---------------------------
+
+_cloud_enabled() { [[ -n "$VAULT_CLOUD_DIR" && "$VAULT_CLOUD_DIR" != none && "$VAULT_CLOUD_DIR" != "$VAULT_DIR" ]]; }
+
+# _mirror_file <rel>  -> copy primary/<rel> to the cloud dir (atomic); 1 on failure
+_mirror_file() {
+  local rel="$1" src="$VAULT_DIR/$1" dst="$VAULT_CLOUD_DIR/$1" tmp
+  _cloud_enabled || return 0
+  [[ -f "$src" ]] || return 0
+  if [[ -f "$dst" ]] && cmp -s "$src" "$dst" 2>/dev/null; then return 0; fi
+  tmp="$(dirname "$dst")/.$(basename "$dst").tmp.$$"
+  { mkdir -p "$(dirname "$dst")" && cp "$src" "$tmp" && mv -f "$tmp" "$dst"; } 2>/dev/null \
+    || { rm -f "$tmp" 2>/dev/null || true; return 1; }
+}
+
+# _mirror_sweep — push every primary file that differs to the cloud dir; clears the pending
+# marker on full success.
+_mirror_sweep() {
+  _cloud_enabled || return 0
+  local ok=1 f
+  while IFS= read -r f; do
+    _mirror_file "${f#"$VAULT_DIR"/}" || ok=0
+  done < <(find "$VAULT_DIR" -type f \( -name '*.age' -o -name recipient.txt \) 2>/dev/null)
+  [[ "$ok" == 1 ]] && { rm -f "$VAULT_DIR/.mirror-pending"; return 0; }
+  return 1
+}
+
+# _mirror_after_write <rel> — mirror one file; on failure mark pending and warn (the next
+# vault write from an app with iCloud access flushes everything pending).
+_mirror_after_write() {
+  _cloud_enabled || return 0
+  if _mirror_file "$1"; then
+    [[ -f "$VAULT_DIR/.mirror-pending" ]] && _mirror_sweep >/dev/null 2>&1 || true
+  else
+    touch "$VAULT_DIR/.mirror-pending"
+    echo "warning: vault updated locally but the iCloud mirror was not (no access to $VAULT_CLOUD_DIR from this app) — will retry on the next vault write, or run vault-sync.sh from a normal terminal" >&2
+  fi
+  return 0
+}
+
+# _cloud_pull <rel> — copy a file from the cloud dir into the primary (new machine / catch-up)
+_cloud_pull() {
+  local rel="$1" src="$VAULT_CLOUD_DIR/$1" dst="$VAULT_DIR/$1"
+  _cloud_enabled || return 1
+  _vault_materialize "$src" 2>/dev/null || return 1
+  mkdir -p "$(dirname "$dst")"
+  if ! cp "$src" "$dst" 2>/dev/null; then
+    echo "warning: $src exists but this app can't read iCloud Drive (macOS permission) — run any vault command from a normal terminal once to localize it" >&2
+    return 1
+  fi
+  chmod 600 "$dst"
+}
+
 # vault_get <service> <stage>  -> decrypted dotenv blob on stdout; 1 if the stage is absent
 vault_get() {
-  local f="$VAULT_DIR/$1/$2.age" id
-  _vault_materialize "$f" || return 1
+  local rel="$1/$2.age" f="$VAULT_DIR/$1/$2.age" id
+  [[ -f "$f" ]] || _cloud_pull "$rel" || return 1
   id="$(identity_load)" || return 1
   age -d -i <(printf '%s\n' "$id") "$f"
 }
@@ -155,21 +225,35 @@ vault_put() {
   printf '%s\n' "$blob" | age -e -R "$rf" -o "$tmp" || { rm -f "$tmp"; return 1; }
   chmod 600 "$tmp"
   mv -f "$tmp" "$dir/$stage.age"
+  _mirror_after_write "$svc/$stage.age"
 }
 
-vault_exists() { [[ -f "$VAULT_DIR/$1/$2.age" ]]; }
-vault_delete_stage() { rm -f "$VAULT_DIR/$1/$2.age"; }
+vault_exists() {
+  [[ -f "$VAULT_DIR/$1/$2.age" ]] && return 0
+  _cloud_enabled && [[ -f "$VAULT_CLOUD_DIR/$1/$2.age" ]]
+}
+vault_delete_stage() {
+  rm -f "$VAULT_DIR/$1/$2.age"
+  if _cloud_enabled && [[ -f "$VAULT_CLOUD_DIR/$1/$2.age" ]]; then
+    rm -f "$VAULT_CLOUD_DIR/$1/$2.age" 2>/dev/null \
+      || echo "warning: deleted locally but not from the iCloud mirror ($VAULT_CLOUD_DIR/$1/$2.age) — remove it from a normal terminal" >&2
+  fi
+}
 
-# vault_services -> service names (one per line); skips key files and iCloud conflict copies
+# vault_services -> service names (one per line; primary ∪ cloud); skips key files and
+# iCloud conflict copies
 vault_services() {
-  local d b
-  [[ -d "$VAULT_DIR" ]] || return 0
-  for d in "$VAULT_DIR"/*/; do
-    [[ -d "$d" ]] || continue
-    b="$(basename "$d")"
-    case "$b" in .*|*' '[0-9]) continue ;; esac
-    printf '%s\n' "$b"
-  done
+  local root d b
+  for root in "$VAULT_DIR" "$VAULT_CLOUD_DIR"; do
+    [[ "$root" == "$VAULT_CLOUD_DIR" ]] && ! _cloud_enabled && continue
+    [[ -d "$root" ]] || continue
+    for d in "$root"/*/; do
+      [[ -d "$d" ]] || continue
+      b="$(basename "$d")"
+      case "$b" in .*|*' '[0-9]) continue ;; esac
+      printf '%s\n' "$b"
+    done
+  done 2>/dev/null | sort -u
 }
 
 # vault_check_migration <service> — refuse to operate on a service whose data still lives

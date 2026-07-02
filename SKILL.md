@@ -92,6 +92,8 @@ they need; don't run them preemptively:
   (interactive: user enters their passphrase once; everything is prompt-free afterwards).
 - `scripts/vault-migrate.sh [--dry-run]` — a command reports legacy data that needs migrating.
   Non-destructive; prints cleanup steps to run after verifying.
+- `scripts/vault-sync.sh` — a vault write warned that the durability mirror wasn't updated
+  (harmless; the write itself succeeded). Retries the mirror; also self-heals on later writes.
 - A brand-new service name needs `--new-service` on `vault-edit`/`vault-import` (typo guard).
 
 ## Multi-repo, submodules & monorepos (read before creating a scope)

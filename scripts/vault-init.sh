@@ -26,18 +26,21 @@ vault_require_age
 [[ -r /dev/tty ]] || { echo "vault-init needs a terminal (passphrase prompt)" >&2; exit 1; }
 
 if [[ "$RECOVER" == 1 ]]; then
-  _vault_materialize "$VAULT_DIR/identity.age" \
-    || { echo "no identity.age in $VAULT_DIR — has iCloud Drive finished syncing?" >&2; exit 1; }
-  echo "Enter the recovery passphrase to unlock $VAULT_DIR/identity.age"
-  id="$(age -d "$VAULT_DIR/identity.age" | grep -m1 '^AGE-SECRET-KEY-1')" \
+  idfile="$(_identity_age_path)" \
+    || { echo "no identity.age found (looked in $VAULT_DIR and the iCloud mirror) — has iCloud Drive finished syncing?" >&2; exit 1; }
+  echo "Enter the recovery passphrase to unlock $idfile"
+  id="$(age -d "$idfile" | grep -m1 '^AGE-SECRET-KEY-1')" \
     || { echo "decryption failed (wrong passphrase?)" >&2; exit 1; }
   printf '%s\n' "$id" | age-keygen -y >/dev/null \
     || { echo "decrypted data is not a valid age identity" >&2; exit 1; }
   _kc_identity_put "$id"
-  if [[ ! -f "$VAULT_DIR/recipient.txt" ]]; then
+  mkdir -p "$VAULT_DIR"
+  [[ -f "$VAULT_DIR/identity.age" ]] || { cp "$idfile" "$VAULT_DIR/identity.age" 2>/dev/null && chmod 600 "$VAULT_DIR/identity.age" || true; }
+  if [[ ! -f "$VAULT_DIR/recipient.txt" ]] && ! _cloud_pull "recipient.txt" 2>/dev/null; then
     printf '%s\n' "$id" | age-keygen -y >"$VAULT_DIR/recipient.txt.tmp.$$" \
       && mv "$VAULT_DIR/recipient.txt.tmp.$$" "$VAULT_DIR/recipient.txt"
   fi
+  "$KC_HERE/vault-sync.sh" --pull || true
   echo "recovered — identity cached in the login Keychain; vault commands work prompt-free now"
   exit 0
 fi
@@ -48,8 +51,8 @@ if _kc_identity_get >/dev/null 2>&1; then
   echo "(recovering on a new Mac? that uses --recover; replacing the identity would orphan every existing vault file)" >&2
   exit 1
 fi
-if [[ -f "$VAULT_DIR/identity.age" ]]; then
-  echo "$VAULT_DIR/identity.age already exists — run vault-init.sh --recover to unlock it here" >&2
+if idfile="$(_identity_age_path)"; then
+  echo "$idfile already exists — run vault-init.sh --recover to unlock it here" >&2
   exit 1
 fi
 
@@ -71,12 +74,17 @@ chmod 600 "$VAULT_DIR/.identity.age.tmp.$$"
 mv "$VAULT_DIR/.identity.age.tmp.$$" "$VAULT_DIR/identity.age"
 
 _kc_identity_put "$id"
+_mirror_after_write "identity.age"
+_mirror_after_write "recipient.txt"
 
 echo ""
 echo "vault initialized: $VAULT_DIR"
 echo "  recipient.txt  public key (writes encrypt with this)"
 echo "  identity.age   passphrase-encrypted recovery copy of the private key"
 echo "  Keychain       plaintext key cached for prompt-free daily use"
+if _cloud_enabled; then
+  echo "  mirror         $VAULT_CLOUD_DIR (durability copy, synced by iCloud)"
+fi
 echo ""
-echo "Recovery on a new Mac: sign in to iCloud, wait for $VAULT_DIR to sync,"
+echo "Recovery on a new Mac: sign in to iCloud, wait for the mirror to sync,"
 echo "run vault-init.sh --recover and enter the passphrase."
