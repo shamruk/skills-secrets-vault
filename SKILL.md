@@ -142,5 +142,6 @@ it may already have it. If the target lives in a submodule, edit the submodule's
 ## Onboarding a new project
 
 To set up `environments/` for a repo that has no secret management yet — scan its existing
-secrets/variables, create the manifest + scope files, and import secrets into the vault — read
+secrets/variables, create the manifest + scope files, import secrets into the vault, and note the
+vault-managed env in the repo's `CLAUDE.md` — read
 [references/init-project.md](references/init-project.md). Load it only for that task.

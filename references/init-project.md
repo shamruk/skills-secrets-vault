@@ -89,7 +89,27 @@ scripts/secrets.sh apply <repo>/<scope> --stage sandbox --dry-run
 `manifest.yaml` with that `repo:`; the index is cached and rebuilt on a miss, so a brand-new
 project is picked up automatically (first lookup is slower).
 
-## 8. Hygiene
+## 8. Record it in the repo's `CLAUDE.md`
+So future Claude sessions (and teammates) don't hand-roll `.env` files or invent key names, add a
+short **Secrets & environment variables** section to the repo's `CLAUDE.md` (create the file if it
+has none; update the section if one already exists). State that the env is vault-managed and pin the
+specifics — service, repo, and the scopes — so the skill loads with the right local context:
+
+```md
+## Secrets & environment variables
+Managed by the **secrets-vault** skill — do not hand-edit `.env`/`.dev.vars`, invent key names, or
+rotate by hand. Config lives in `environments/` (service `acme.dev`, repo `my-worker`): secrets
+resolve from the age vault, non-secret variables from the committed `variables` files.
+Scopes (deploy targets): `cloudflare`, `gha`. Use the skill to check/print/apply a scope or to
+add/rotate a secret — `secrets.sh check|apply my-worker/<scope> --stage <production|sandbox>`,
+`vault-edit.sh <stage> --service acme.dev`.
+```
+
+Fill in the real service/repo/scope names (drop targets this repo doesn't have). If this repo is
+used as a **git submodule** elsewhere, this note belongs in **its own** `CLAUDE.md`, not the
+parent's — same rule as `environments/` (see SKILL.md "Multi-repo, submodules & monorepos").
+
+## 9. Hygiene
 - Add real secret files (`.env`, `.dev.vars`) to `.gitignore`. If any were committed, untrack
   (`git rm --cached`), gitignore, and **rotate** the exposed values, then update the vault.
 - `environments/` (manifest, variables, scopes) is non-secret and should be committed.
