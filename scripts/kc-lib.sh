@@ -359,7 +359,9 @@ var_has() {
 
 # find_worktree_dir [start]  -> walk up to the nearest .git file/directory
 find_worktree_dir() {
-  local d; d="$(cd "${1:-$PWD}" && pwd -P)"
+  # explicit || return: call sites test the function, which suppresses set -e in here —
+  # a failed cd (deleted cwd) would otherwise leave d="" and loop on `dirname ""` = "." forever
+  local d; d="$(cd "${1:-$PWD}" 2>/dev/null && pwd -P)" || return 1
   while [[ "$d" != "/" ]]; do
     [[ -e "$d/.git" ]] && { printf '%s' "$d"; return 0; }
     d="$(dirname "$d")"
@@ -379,5 +381,8 @@ find_project_dir() {
 pick_service() {
   if [[ -n "${1:-}" ]]; then printf '%s' "$1"; return 0; fi
   if [[ -n "${SECRETS_VAULT_SERVICE:-}" ]]; then printf '%s' "$SECRETS_VAULT_SERVICE"; return 0; fi
-  local d; d="$(find_project_dir 2>/dev/null)" && service_for "$d"
+  # return 0 with empty output when unresolved: callers assign under set -e and then print
+  # their own "no service: pass --service…" guidance, which a nonzero status would preempt
+  local d; d="$(find_project_dir 2>/dev/null)" || return 0
+  service_for "$d"
 }

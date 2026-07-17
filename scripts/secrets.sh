@@ -29,7 +29,7 @@
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/kc-lib.sh"
 
-[[ $# -ge 2 ]] || { sed -n '2,30p' "$0"; exit 2; }
+[[ $# -ge 2 ]] || { sed -n '2,27p' "$0"; exit 2; }
 ACTION="$1"; SCOPE_ARG="$2"; shift 2
 REPO_ASSERT=""; SCOPE="$SCOPE_ARG"
 if [[ "$SCOPE_ARG" == */* ]]; then

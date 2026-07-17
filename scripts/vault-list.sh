@@ -3,7 +3,7 @@
 # With no resolvable service, lists every service in the vault instead.
 #
 # Usage: vault-list.sh [--service <namespace>] [--all]
-#   service resolves from: --service | $SECRETS_VAULT_SERVICE | nearest project's manifest.yaml
+#   service resolves from: --service | $SECRETS_VAULT_SERVICE | current worktree's manifest.yaml
 
 set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/kc-lib.sh"
