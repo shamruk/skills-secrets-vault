@@ -38,9 +38,6 @@ VAULT_KC_SERVICE="secrets-vault"   # Keychain item caching the plaintext age ide
 VAULT_KC_ACCOUNT="${SECRETS_VAULT_KC_ACCOUNT:-age-identity}"   # override only for tests
 VAULT_KC_KIND="secrets-vault-identity"
 
-# Root to scan for projects (each declares itself via environments/manifest.yaml). Override via env.
-SECRETS_VAULT_REPOS_ROOT="${SECRETS_VAULT_REPOS_ROOT:-$HOME/Projects}"
-
 # ---- legacy keychain access (read-only: identity cache + vault-migrate.sh) ----
 
 kc_put() {
@@ -358,55 +355,23 @@ var_has() {
   [[ -f "$dir/environments/variables" ]] && de_has "$(cat "$dir/environments/variables")" "$key"
 }
 
-# ---- project resolution (no central registry) --------------------------------
+# ---- current-worktree resolution ---------------------------------------------
 
-# _scan_manifests  -> every environments/manifest.yaml under the repos root (bounded + pruned)
-_scan_manifests() {
-  find "$SECRETS_VAULT_REPOS_ROOT" -maxdepth 8 \
-    \( -name node_modules -o -name .git -o -name build -o -name .dart_tool \
-       -o -name Pods -o -name DerivedData -o -name .venv -o -name venv \
-       -o -name dist -o -name target -o -name vendor -o -name .next -o -name .gradle \) -prune -o \
-    -type f -path '*/environments/manifest.yaml' -print 2>/dev/null
-}
-
-# A repo→dir index is cached (the scan is slow on a big tree). It self-heals on a miss.
-_cache_file() { printf '%s/repo-index' "${SECRETS_VAULT_CACHE:-$HOME/.cache/secrets-vault}"; }
-_rebuild_cache() {
-  local cf mf r d; cf="$(_cache_file)"; mkdir -p "$(dirname "$cf")"; : >"$cf.tmp"
-  while IFS= read -r mf; do
-    [[ -z "$mf" ]] && continue
-    r="$("$YAML2JSON" "$mf" 2>/dev/null | jq -r '.repo // empty')"; [[ -z "$r" ]] && continue
-    d="$(cd "$(dirname "$mf")/.." && pwd)"
-    printf '%s\t%s\n' "$r" "$d" >>"$cf.tmp"
-  done < <(_scan_manifests)
-  mv "$cf.tmp" "$cf"
-}
-_cache_lookup() { local cf; cf="$(_cache_file)"; [[ -f "$cf" ]] && awk -F'\t' -v r="$1" '$1==r{print $2; exit}' "$cf"; }
-_dir_is_repo() { [[ -f "$1/environments/manifest.yaml" ]] && \
-  [[ "$("$YAML2JSON" "$1/environments/manifest.yaml" 2>/dev/null | jq -r '.repo // empty')" == "$2" ]]; }
-
-# repo_dir <repo>  -> absolute project dir (cache first; rescan on miss). Set SECRETS_VAULT_NOCACHE=1 to bypass.
-repo_dir() {
-  local want="$1" d
-  if [[ -z "${SECRETS_VAULT_NOCACHE:-}" ]]; then
-    d="$(_cache_lookup "$want")"
-    if [[ -n "$d" ]] && _dir_is_repo "$d" "$want"; then printf '%s' "$d"; return 0; fi
-  fi
-  _rebuild_cache
-  d="$(_cache_lookup "$want")"
-  [[ -n "$d" ]] && { printf '%s' "$d"; return 0; }
-  echo "repo not found: no environments/manifest.yaml with repo: '$want' under $SECRETS_VAULT_REPOS_ROOT" >&2
-  return 1
-}
-
-# find_project_dir [start]  -> walk up from cwd to the project root (has environments/manifest.yaml)
-find_project_dir() {
-  local d; d="$(cd "${1:-$PWD}" && pwd)"
+# find_worktree_dir [start]  -> walk up to the nearest .git file/directory
+find_worktree_dir() {
+  local d; d="$(cd "${1:-$PWD}" && pwd -P)"
   while [[ "$d" != "/" ]]; do
-    [[ -f "$d/environments/manifest.yaml" ]] && { printf '%s' "$d"; return 0; }
+    [[ -e "$d/.git" ]] && { printf '%s' "$d"; return 0; }
     d="$(dirname "$d")"
   done
   return 1
+}
+
+# find_project_dir [start]  -> current Git worktree root, if it owns a manifest
+find_project_dir() {
+  local d; d="$(find_worktree_dir "${1:-$PWD}")" || return 1
+  [[ -f "$d/environments/manifest.yaml" ]] || return 1
+  printf '%s' "$d"
 }
 
 # pick_service [--service X already parsed into $1]  -> service from arg | env | cwd project

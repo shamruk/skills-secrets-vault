@@ -6,6 +6,9 @@ into the age vault, so `secrets.sh` can check/print/apply them. Do this once per
 Prerequisite (once per machine): `scripts/vault-init.sh` — skip if the vault already works;
 any command will say what's missing otherwise (see SKILL.md "One-time setup").
 
+Resolve `scripts/...` in the examples against this skill's directory. For `secrets.sh`, keep the
+shell working directory inside the target worktree and invoke the script by its absolute path.
+
 ## 1. Decide the ecosystem `service`
 Secrets are grouped by a **service** namespace — a directory in the vault — shared by related
 projects (e.g. `acme.dev`). Check `scripts/vault-list.sh --all` for existing services and reuse
@@ -64,7 +67,8 @@ SUPABASE_ACCESS_TOKEN                              # secret  (from a vault)
 PROD_DB_PASSWORD = DB_PASSWORD@production          # secret  (cross-stage)
 PROD_PROJECT_ID  = SUPABASE_PROJECT_ID@production  # variable (from variables.production)
 ```
-Pick `repo:` to match how you'll address it: `secrets.sh … <repo>/<scope>`.
+Pick a stable `repo:` name as project metadata; scope commands locate the project from the current
+worktree rather than from this name.
 
 ## 6. Load secrets into the vault
 Per stage, assemble a temporary dotenv file of the **secret** values (env-neutral names) and:
@@ -80,14 +84,18 @@ never prints values. Put env-agnostic secrets (same in all stages) into `common`
 afterward** (`rm -f`, or `rm -P` to overwrite first); they hold plaintext.
 
 ## 7. Verify
+
+Run from anywhere inside the new project's worktree:
+
 ```bash
 scripts/vault-list.sh --service <ns>
-scripts/secrets.sh check <repo>/<scope> --stage sandbox     # every key ok or BLANK, tagged secret|variable
-scripts/secrets.sh apply <repo>/<scope> --stage sandbox --dry-run
+scripts/secrets.sh check <scope> --stage sandbox     # every key ok or BLANK, tagged secret|variable
+scripts/secrets.sh apply <scope> --stage sandbox --dry-run
 ```
-`<repo>` is resolved by scanning `SECRETS_VAULT_REPOS_ROOT` (default `~/Projects`) for a
-`manifest.yaml` with that `repo:`; the index is cached and rebuilt on a miss, so a brand-new
-project is picked up automatically (first lookup is slower).
+
+The command identifies the current Git worktree and requires
+`environments/manifest.yaml` at its root. It does not scan other repositories, choose another
+worktree, or fall through to a parent repository.
 
 ## 8. Record it in the repo's `CLAUDE.md`
 So future Claude sessions (and teammates) don't hand-roll `.env` files or invent key names, add a
@@ -101,7 +109,8 @@ Managed by the **secrets-vault** skill — do not hand-edit `.env`/`.dev.vars`, 
 rotate by hand. Config lives in `environments/` (service `acme.dev`, repo `my-worker`): secrets
 resolve from the age vault, non-secret variables from the committed `variables` files.
 Scopes (deploy targets): `cloudflare`, `gha`. Use the skill to check/print/apply a scope or to
-add/rotate a secret — `secrets.sh check|apply my-worker/<scope> --stage <production|sandbox>`,
+add/rotate a secret — from this worktree run
+`secrets.sh check|apply <scope> --stage <production|sandbox>`,
 `vault-edit.sh <stage> --service acme.dev`.
 ```
 
@@ -115,5 +124,5 @@ parent's — same rule as `environments/` (see SKILL.md "Multi-repo, submodules 
 - `environments/` (manifest, variables, scopes) is non-secret and should be committed.
 - If this repo is used as a **git submodule** elsewhere, its `environments/` (especially
   `manifest.yaml`) belongs in **this** repo — not the parent — and must be committed on every branch
-  the submodule/deploy tracks (e.g. both `main` and `dev`), or a checkout from inside the submodule
-  resolves to the parent project's manifest. See SKILL.md "Multi-repo, submodules & monorepos".
+  the submodule/deploy tracks (e.g. both `main` and `dev`), or project-scoped commands stop because
+  that worktree has no manifest. See SKILL.md "Multi-repo, submodules & monorepos".

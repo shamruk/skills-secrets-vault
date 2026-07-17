@@ -53,16 +53,17 @@ PROD_DB_PASSWORD   = DB_PASSWORD@production        # cross-stage: pin source to 
 
 ## Commands
 
-Run scripts from `scripts/`. Service is read from the target project's `manifest.yaml`
-(or `--service <ns>` / `$SECRETS_VAULT_SERVICE` / the nearest project when in a repo).
-Projects are found by scanning `$SECRETS_VAULT_REPOS_ROOT` (default `~/Projects`) for a
-`manifest.yaml` whose `repo:` matches.
+Run project-scoped commands from anywhere inside the target Git worktree; that worktree's root
+`environments/manifest.yaml` supplies its project and service. Invoke the skill script by its
+absolute path (or otherwise preserve the target worktree as the shell working directory).
+Vault-only commands accept `--service <ns>` / `$SECRETS_VAULT_SERVICE` and otherwise use the
+current worktree's project manifest.
 
 ```bash
-scripts/secrets.sh check  <repo>/<scope> --stage <stage>      # resolve, tag secret|variable, no side effects
-scripts/secrets.sh print  <repo>/<scope> --stage <stage> [--mask]
-scripts/secrets.sh export <repo>/<scope> --stage <stage>      # eval "$(… export …)"
-scripts/secrets.sh apply  <repo>/<scope> --stage <stage> [--dry-run] [--yes]
+scripts/secrets.sh check  <scope> --stage <stage>      # resolve, tag secret|variable, no side effects
+scripts/secrets.sh print  <scope> --stage <stage> [--mask]
+scripts/secrets.sh export <scope> --stage <stage>      # eval "$(… export …)"
+scripts/secrets.sh apply  <scope> --stage <stage> [--dry-run] [--yes]
 
 scripts/vault-list.sh [--service <ns>] [--all]                # stages + key counts (no values); --all / no project = every service
 scripts/vault-show.sh <stage> [--service <ns>] [--mask] [KEY …]
@@ -70,6 +71,9 @@ scripts/vault-edit.sh <stage> [--service <ns>] [--yes] [--new-service]   # $EDIT
 scripts/vault-import.sh <stage> [--service <ns>] [--force] [--yes] [--new-service] [FILE]  # merge a dotenv file into a stage
 scripts/vault-delete.sh <stage> [--service <ns>] [--yes]      # delete a stage (typed confirmation)
 ```
+
+Legacy `<repo>/<scope>` input is accepted only when `<repo>` matches the current worktree's
+manifest; it never searches for or switches to another checkout.
 
 `apply` routing: **cloudflare** → `wrangler secret put …` (secrets only; vars stay in the wrangler
 config). By default targets `--env <stage>` (per-stage named envs); a scope can set `# wrangler-env:
@@ -110,24 +114,24 @@ A **scope belongs to the repo that owns its deploy target** — the repo holding
   `cloudflare`/`gha`/… scope into the parent — that's a duplicate in the wrong place. (A worker that
   is a submodule deploys from its **own** repo, not from the umbrella.)
 - **Every repo must commit its own `environments/manifest.yaml`**, on every branch a submodule or
-  deploy tracks. Without it the repo isn't self-identifying: commands run from *inside* it walk
-  **up** and resolve to the parent project's manifest (wrong `repo:`/`service`). `environments/`
-  (manifest + scopes + variables) is branch-agnostic tooling config — keep it identical across
-  branches; don't let it land on `dev` but not `main` (a classic bug when a submodule tracks `main`).
-- Resolution is by the `repo:` in a manifest (scanned under `$SECRETS_VAULT_REPOS_ROOT`), so
-  `<repo>/<scope>` works from anywhere — you need **not** be inside the parent. A repo checked out
-  twice (its own clone **and** a parent's `submodule/` path) yields two manifests with the same
-  `repo:`; the resolver picks one — fine, since they're the same repo with the same scopes.
-- All repos in one ecosystem share **one** `service`; each manifest just sets `service:`.
-  Secrets are shared; each scope selects the subset its target needs.
+  deploy tracks. Without it, commands stop at that repo's `.git` boundary with a clear error; they
+  never fall through to a parent repo. Commit scope changes on the branch that needs them, then
+  merge them into every long-lived or deploy-tracked branch that also needs them.
+- Resolution always uses the **current worktree**: find its `.git` boundary and require a manifest
+  at that root, then read that worktree's scope and variables. It never crosses into a parent repo.
+  Multiple worktrees are not ambiguous, and a feature-branch scope never needs to be copied into
+  another checkout.
+- All repos in one ecosystem share **one** `service`; each manifest records that shared service and
+  its own stable `repo:` label. Secrets are shared; each scope selects the subset its target needs.
 
-**Before creating a scope:** find the repo that owns the target and check `<repo>/environments/` —
-it may already have it. If the target lives in a submodule, edit the submodule's repo, not the parent.
+**Before creating a scope:** enter a worktree of the repo that owns the target and check its
+`environments/` — it may already have the scope. If the target lives in a submodule, edit the
+submodule's repo, not the parent.
 
 ## Conventions & safety
 
 - A scope lives in the repo that **owns its deploy target**, never in an umbrella repo that merely
-  submodules it; commit each repo's `environments/manifest.yaml` so it self-identifies from any checkout.
+  submodules it; run project-scoped commands inside that repo's worktree.
 - **Destructive writes are guarded.** Replacing/blanking an existing **non-blank** secret
   (`vault-import --force`, or a `vault-edit` that deletes/blanks/changes a value) prints a loud
   warning (key, masked old → new) and requires typing `overwrite` at the TTY; `--yes` bypasses it

@@ -7,7 +7,7 @@ set of bash scripts that sync secrets to **Cloudflare Workers, GitHub Actions, C
 Appwrite, or local `.env`/`.dev.vars` files** — per project, per stage.
 
 Built as a [Claude Code](https://claude.com/claude-code) skill, but every script works
-standalone from any shell.
+standalone from a shell. Run project-scoped commands inside the target worktree.
 
 ```
       daily use (no prompts, no TCC)          durability                disaster recovery
@@ -78,10 +78,14 @@ PROD_DB_PASSWORD = DB_PASSWORD@production  # rename + pin to a stage
 The engine resolves every key (vault → secret, variables file → variable) and routes it:
 
 ```bash
-scripts/secrets.sh check  my-worker/cloudflare --stage sandbox   # ok/BLANK per key, no side effects
-scripts/secrets.sh apply  my-worker/cloudflare --stage sandbox   # wrangler secret put …
-scripts/secrets.sh apply  my-app/gha --stage production          # gh secret set / gh variable set
-scripts/secrets.sh apply  my-app/dev --stage sandbox             # render .dev.vars locally
+SV="$HOME/.claude/skills/secrets-vault/scripts"
+cd /path/to/my-worker
+"$SV/secrets.sh" check cloudflare --stage sandbox   # ok/BLANK per key, no side effects
+"$SV/secrets.sh" apply cloudflare --stage sandbox   # wrangler secret put …
+
+cd /path/to/my-app
+"$SV/secrets.sh" apply gha --stage production       # gh secret set / gh variable set
+"$SV/secrets.sh" apply dev --stage sandbox          # render .dev.vars locally
 ```
 
 Vault maintenance:

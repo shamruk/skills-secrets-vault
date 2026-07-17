@@ -3,7 +3,10 @@
 # variables files, then check / print / export / apply.
 #
 # Usage:
-#   secrets.sh <action> <repo>/<scope> --stage <stage> [options]
+#   secrets.sh <action> <scope> --stage <stage> [options]
+#
+# Run from anywhere inside the target worktree. Its root
+# environments/manifest.yaml identifies the project and service.
 #
 # actions:
 #   check    report each key as ok / blank, tagged secret|variable (default; no side effects)
@@ -27,8 +30,12 @@ set -euo pipefail
 source "$(cd "$(dirname "$0")" && pwd)/kc-lib.sh"
 
 [[ $# -ge 2 ]] || { sed -n '2,30p' "$0"; exit 2; }
-ACTION="$1"; REF="$2"; shift 2
-REPO="${REF%%/*}"; SCOPE="${REF#*/}"
+ACTION="$1"; SCOPE_ARG="$2"; shift 2
+REPO_ASSERT=""; SCOPE="$SCOPE_ARG"
+if [[ "$SCOPE_ARG" == */* ]]; then
+  REPO_ASSERT="${SCOPE_ARG%%/*}"
+  SCOPE="${SCOPE_ARG#*/}"
+fi
 STAGE=""; MASK=0; DRY=0; YES=0
 while [[ $# -gt 0 ]]; do case "$1" in
   --stage) STAGE="$2"; shift 2 ;;
@@ -39,10 +46,28 @@ while [[ $# -gt 0 ]]; do case "$1" in
 esac; done
 
 case "$ACTION" in check|print|export|apply) ;; *) echo "unknown action: $ACTION" >&2; exit 2 ;; esac
+[[ "$SCOPE_ARG" != */* || -n "$REPO_ASSERT" ]] \
+  || { echo "scope must be one file name (for example 'gha'); run the command inside the target worktree" >&2; exit 2; }
+[[ -n "$SCOPE" && "$SCOPE" != */* && "$SCOPE" != "." && "$SCOPE" != ".." \
+   && "$REPO_ASSERT" != "." && "$REPO_ASSERT" != ".." ]] \
+  || { echo "scope must be one file name (for example 'gha'); run the command inside the target worktree" >&2; exit 2; }
 
-DIR="$(repo_dir "$REPO")" || exit 1
+DIR="$(find_worktree_dir 2>/dev/null)" || {
+  echo "not inside a Git worktree: run this command from the target worktree" >&2
+  exit 1
+}
+[[ -f "$DIR/environments/manifest.yaml" ]] || {
+  echo "current worktree has no environments/manifest.yaml: $DIR" >&2
+  exit 1
+}
 SERVICE="$(service_for "$DIR")"
 [[ -n "$SERVICE" ]] || { echo "$DIR/environments/manifest.yaml missing 'service:'" >&2; exit 1; }
+REPO="$(mf_get "$DIR" '.repo')"
+[[ -n "$REPO" ]] || { echo "$DIR/environments/manifest.yaml missing 'repo:'" >&2; exit 1; }
+[[ -z "$REPO_ASSERT" || "$REPO_ASSERT" == "$REPO" ]] || {
+  echo "repo '$REPO_ASSERT' does not match current worktree manifest repo '$REPO': $DIR" >&2
+  exit 2
+}
 scope_file="$DIR/environments/$SCOPE"
 [[ -f "$scope_file" ]] || { echo "no scope file: $scope_file" >&2; exit 1; }
 
@@ -77,7 +102,7 @@ done < "$scope_file"
 
 [[ -n "$TARGET" ]] || { echo "scope $scope_file missing '# target:' directive" >&2; exit 1; }
 if [[ -z "$STAGE" ]]; then
-  for e in "${KEYS[@]}"; do [[ -z "${e##*$'\t'}" ]] && { echo "--stage required for $REF" >&2; exit 2; }; done
+  for e in "${KEYS[@]}"; do [[ -z "${e##*$'\t'}" ]] && { echo "--stage required for $SCOPE" >&2; exit 2; }; done
 fi
 
 # ---- load this service's vaults (once) ----

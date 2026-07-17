@@ -162,8 +162,6 @@ age -d -i <(age -d "$VAULT_DIR/identity.age") "$VAULT_DIR/<service>/<stage>.age"
 | `SECRETS_VAULT_IDENTITY_FILE` | read the age identity from this file; Keychain untouched (tests/CI) |
 | `SECRETS_VAULT_KC_ACCOUNT` | Keychain account name for the identity cache (tests only) |
 | `SECRETS_VAULT_SERVICE` | default service when no `--service`/project context |
-| `SECRETS_VAULT_REPOS_ROOT` | root scanned for project manifests (default `~/Projects`) |
-| `SECRETS_VAULT_CACHE` / `SECRETS_VAULT_NOCACHE` | repo-index cache location / bypass |
 
 ## File map
 
@@ -179,6 +177,7 @@ age -d -i <(age -d "$VAULT_DIR/identity.age") "$VAULT_DIR/<service>/<stage>.age"
 | `scripts/helper-src/` | SwiftPM source of the container-scoped helper |
 | `scripts/vault-migrate.sh` | one-time legacy Keychain → vault migration |
 | `scripts/yaml2json` | YAML shim (ruby → yq → python3+PyYAML) for `manifest.yaml` |
+| `tests/current-worktree.sh` | isolated regression checks for project/scope resolution |
 
 Requirements: macOS, bash 3.2-compatible scripts, `age`/`age-keygen` (brew), `jq`; per-target
 CLIs (`npx wrangler`, `gh`, `curl`) only when that target is used.
